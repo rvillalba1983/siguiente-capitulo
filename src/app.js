@@ -4,7 +4,7 @@ const SB_URL="https://dfxnudfolvtlbkoypxav.supabase.co";
 const SB_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRmeG51ZGZvbHZ0bGJrb3lweGF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5NTk0NDAsImV4cCI6MjEwODUzNTQ0MH0.hdorCO3yrXRBRZ-B-P_caZwDVW1gW1-5QJ0a7C_rvig";
 const sb=window.supabase.createClient(SB_URL,SB_KEY);
 
-const S={user:null,series:[],settings:null,open:null,confirm:null,removing:false,checking:null,loaded:false,autoDone:false,authMode:"in"};
+const S={user:null,series:[],settings:null,open:null,confirm:null,removing:false,checking:null,loaded:false,autoDone:false};
 const $=id=>document.getElementById(id);
 const DAY=864e5, EVERY=3*DAY, GRID_MAX=60;
 
@@ -276,34 +276,20 @@ async function importSeed(){
   }catch(e){toast("No se pudo importar: "+(e.message||"falta el archivo de series"),true);b.disabled=false;b.textContent="Importar mis series"}
 }
 
-/* ---------- Inicio de sesión ---------- */
-function renderLogin(){
-  const up=S.authMode==="up";
-  $("authTitle").textContent=up?"Crea tu cuenta":"Entra en tu cuenta";
-  $("authBtn").textContent=up?"Crear cuenta":"Entrar";
-  $("authSwitch").innerHTML=up?'¿Ya tienes cuenta? <button type="button" class="link" id="toIn">Entrar</button>':'¿Primera vez? <button type="button" class="link" id="toUp">Crear cuenta</button>';
-  $("authPass").autocomplete=up?"new-password":"current-password";
-}
-document.addEventListener("click",e=>{
-  if(e.target.id==="toUp"){S.authMode="up";$("authMsg").textContent="";renderLogin()}
-  if(e.target.id==="toIn"){S.authMode="in";$("authMsg").textContent="";renderLogin()}
-});
-$("authForm").addEventListener("submit",async e=>{
-  e.preventDefault();
-  const email=$("authEmail").value.trim(),password=$("authPass").value,msg=$("authMsg");
-  $("authBtn").disabled=true;msg.textContent="";
-  try{
-    if(S.authMode==="up"){
-      const {data,error}=await sb.auth.signUp({email,password});
-      if(error)throw error;
-      if(!data.session)msg.textContent="Te he enviado un correo para confirmar la cuenta. Ábrelo y vuelve aquí para entrar.";
-    }else{
-      const {error}=await sb.auth.signInWithPassword({email,password});
-      if(error)throw error;
-    }
-  }catch(err){
-    msg.textContent=/limite de 20|Database error saving new user/i.test(err.message)?"Ya hay 20 personas usando esta web y no quedan plazas libres.":/Invalid login/i.test(err.message)?"Correo o contraseña incorrectos.":/not confirmed/i.test(err.message)?"Confirma tu correo antes de entrar; revisa tu bandeja de entrada.":/at least 6/i.test(err.message)?"La contraseña debe tener al menos 6 caracteres.":err.message;
-  }finally{$("authBtn").disabled=false}
+/* ---------- Inicio de sesión con Google ---------- */
+function renderLogin(){}
+// Si Google o Supabase devuelven un error al volver (por ejemplo, cupo lleno), se muestra y se limpia la dirección.
+(function(){
+  const q=new URLSearchParams(location.search+"&"+location.hash.replace(/^#/,""));
+  const err=q.get("error_description")||q.get("error");
+  if(!err)return;
+  $("authMsg").textContent=/limite de 20|Database error saving new user/i.test(err)?"Ya hay 20 personas usando esta web y no quedan plazas libres.":/access_denied/i.test(err)?"Has cancelado el inicio de sesión con Google.":"No se pudo entrar con Google: "+err;
+  history.replaceState(null,"",location.pathname);
+})();
+$("googleBtn").addEventListener("click",async()=>{
+  $("googleBtn").disabled=true;$("authMsg").textContent="";
+  const {error}=await sb.auth.signInWithOAuth({provider:"google",options:{redirectTo:location.origin+location.pathname,queryParams:{prompt:"select_account"}}});
+  if(error){$("authMsg").textContent="No se pudo abrir Google: "+error.message;$("googleBtn").disabled=false}
 });
 sb.auth.onAuthStateChange((_ev,session)=>{
   const u=session?.user||null;
