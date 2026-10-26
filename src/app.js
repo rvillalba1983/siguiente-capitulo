@@ -30,9 +30,9 @@ function write(id,patch){
   });
 }
 async function loadAll(){
-  const [a,b]=await Promise.all([sb.from("series").select("*"),sb.from("settings").select("*").maybeSingle()]);
+  const [a,b,c]=await Promise.all([sb.from("series").select("*"),sb.from("settings").select("*").maybeSingle(),sb.rpc("soy_el_primero")]);
   if(a.error){toast("No se pudieron cargar tus series: "+a.error.message,true);return}
-  S.series=a.data||[];S.settings=b.data||null;S.loaded=true;render();maybeAuto();
+  S.series=a.data||[];S.settings=b.data||null;S.owner=c.data===true;S.loaded=true;render();maybeAuto();
 }
 let channel;
 function subscribe(){
@@ -153,9 +153,12 @@ function addHtml(){
   </form></div>`;
 }
 function emptyHtml(){
-  return `<div class="welcome"><h2>Tu lista está vacía</h2>
+  if(S.owner)return `<div class="welcome"><h2>Tu lista está vacía</h2>
     <p>Puedes traer las 17 series que ya seguías, con portadas, resúmenes y los capítulos que has visto.</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="button" class="play" id="importBtn">Importar mis series</button><button type="button" class="soft" data-add>Añadir una serie</button></div></div>`;
+  return `<div class="welcome"><h2>Empieza tu lista</h2>
+    <p>Añade las series y animes que sigues pegando el enlace de un capítulo de AnimeFLV o Cuevana. La web buscará los capítulos nuevos por ti cada 3 días y recordará cuáles has visto.</p>
+    <div><button type="button" class="play" data-add>Añadir mi primera serie</button></div></div>`;
 }
 function render(){
   const app=$("app"),login=$("login");
@@ -299,7 +302,7 @@ $("authForm").addEventListener("submit",async e=>{
       if(error)throw error;
     }
   }catch(err){
-    msg.textContent=/Invalid login/i.test(err.message)?"Correo o contraseña incorrectos.":/not confirmed/i.test(err.message)?"Confirma tu correo antes de entrar; revisa tu bandeja de entrada.":/at least 6/i.test(err.message)?"La contraseña debe tener al menos 6 caracteres.":err.message;
+    msg.textContent=/limite de 20|Database error saving new user/i.test(err.message)?"Ya hay 20 personas usando esta web y no quedan plazas libres.":/Invalid login/i.test(err.message)?"Correo o contraseña incorrectos.":/not confirmed/i.test(err.message)?"Confirma tu correo antes de entrar; revisa tu bandeja de entrada.":/at least 6/i.test(err.message)?"La contraseña debe tener al menos 6 caracteres.":err.message;
   }finally{$("authBtn").disabled=false}
 });
 sb.auth.onAuthStateChange((_ev,session)=>{

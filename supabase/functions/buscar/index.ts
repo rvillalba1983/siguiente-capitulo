@@ -101,8 +101,10 @@ Deno.serve(async (req) => {
   const URL_ = Deno.env.get("SUPABASE_URL")!;
   const COLS = "id,user_id,title,cuevana,season,watch_tpl,alts,check_url,latest,up_to,summary,cover";
 
-  // Modo automático (tarea diaria de la base de datos): busca para cada usuario
-  // cuya última búsqueda tenga más de 3 días. Llamarlo de más no hace nada.
+  // Modo automático (tarea de cada hora en la base de datos): busca para los
+  // usuarios cuya última búsqueda tenga más de 3 días, como mucho 4 por llamada
+  // (los más atrasados primero) para no pasar del tiempo máximo de la función.
+  // Llamarlo de más no hace nada.
   if (body.cron) {
     const admin = createClient(URL_, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const [{ data: all }, { data: sets }] = await Promise.all([
@@ -113,10 +115,11 @@ Deno.serve(async (req) => {
     const porUsuario = new Map<string, Serie[]>();
     for (const s of (all || []) as Serie[]) porUsuario.set(s.user_id, [...(porUsuario.get(s.user_id) || []), s]);
     const hechos: string[] = [];
-    for (const [uid, lista] of porUsuario) {
-      const lc = last.get(uid);
-      if (lc && Date.now() - Date.parse(String(lc)) < EVERY - 3600e3) continue;
-      const r = await procesar(admin, lista);
+    const edad = (uid: string) => { const lc = last.get(uid); return lc ? Date.now() - Date.parse(String(lc)) : Infinity; };
+    const toca = [...porUsuario.keys()].filter((uid) => edad(uid) >= EVERY - 3600e3)
+      .sort((a, b) => edad(b) - edad(a)).slice(0, 4);
+    for (const uid of toca) {
+      const r = await procesar(admin, porUsuario.get(uid)!);
       await admin.from("settings").upsert({ user_id: uid, last_check: new Date().toISOString(), last_summary: r.summary });
       hechos.push(uid);
     }
