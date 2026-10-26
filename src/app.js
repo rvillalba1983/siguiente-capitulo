@@ -6,7 +6,7 @@ const sb=window.supabase.createClient(SB_URL,SB_KEY);
 
 const S={user:null,series:[],settings:null,open:null,confirm:null,removing:false,checking:null,loaded:false,autoDone:false,authMode:"in"};
 const $=id=>document.getElementById(id);
-const DAY=864e5, EVERY=2*DAY, GRID_MAX=60;
+const DAY=864e5, EVERY=3*DAY, GRID_MAX=60;
 
 const esc=t=>String(t??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isW=(s,n)=>n<=(s.up_to||0)||(s.extras||[]).includes(n);

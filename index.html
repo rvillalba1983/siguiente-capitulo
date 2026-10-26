@@ -161,7 +161,7 @@ input{font:inherit;font-size:15px;color:var(--ink);background:var(--bg);border:1
 </div>
 <div id="hero"></div>
 <main id="rows" class="gut"><p class="empty">Cargando tus series…</p></main>
-<p class="foot gut">Al abrir la página se buscan capítulos nuevos en AnimeFLV y Cuevana si han pasado más de 2 días desde la última búsqueda. También puedes pulsar «Buscar nuevos» cuando quieras, desde cualquier dispositivo.</p>
+<p class="foot gut">Al abrir la página se buscan capítulos nuevos en AnimeFLV y Cuevana si han pasado más de 3 días desde la última búsqueda. Además, Supabase la hace solo cada 3 días aunque no la abras. También puedes pulsar «Buscar nuevos» cuando quieras, desde cualquier dispositivo.</p>
 <div class="sheet" id="sheet" hidden></div>
 </div>
 <div class="toast" id="toast" hidden></div>
@@ -176,7 +176,7 @@ const sb=window.supabase.createClient(SB_URL,SB_KEY);
 
 const S={user:null,series:[],settings:null,open:null,confirm:null,removing:false,checking:null,loaded:false,autoDone:false,authMode:"in"};
 const $=id=>document.getElementById(id);
-const DAY=864e5, EVERY=2*DAY, GRID_MAX=60;
+const DAY=864e5, EVERY=3*DAY, GRID_MAX=60;
 
 const esc=t=>String(t??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isW=(s,n)=>n<=(s.up_to||0)||(s.extras||[]).includes(n);

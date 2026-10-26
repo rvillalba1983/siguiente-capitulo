@@ -14,7 +14,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
 type Serie = {
-  id: string; title: string; cuevana: boolean; season: number | null;
+  id: string; user_id: string; title: string; cuevana: boolean; season: number | null;
   watch_tpl: string; alts: string[] | null; check_url: string; latest: number; up_to: number;
   summary: string | null; cover: string | null;
 };
@@ -73,7 +73,7 @@ function analizar(s: Pick<Serie, "check_url" | "cuevana" | "season">, html: stri
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-  let body: { ids?: string[]; test?: boolean } = {};
+  let body: { ids?: string[]; test?: boolean; cron?: boolean } = {};
   try { body = await req.json(); } catch (_) { /* sin cuerpo */ }
 
   // Modo prueba: comprueba que las webs responden, sin tocar datos.
@@ -98,20 +98,56 @@ Deno.serve(async (req) => {
     return json({ test: out, enlaces });
   }
 
+  const URL_ = Deno.env.get("SUPABASE_URL")!;
+  const COLS = "id,user_id,title,cuevana,season,watch_tpl,alts,check_url,latest,up_to,summary,cover";
+
+  // Modo automático (tarea diaria de la base de datos): busca para cada usuario
+  // cuya última búsqueda tenga más de 3 días. Llamarlo de más no hace nada.
+  if (body.cron) {
+    const admin = createClient(URL_, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const [{ data: all }, { data: sets }] = await Promise.all([
+      admin.from("series").select(COLS),
+      admin.from("settings").select("user_id,last_check"),
+    ]);
+    const last = new Map((sets || []).map((x: { user_id: string; last_check: string | null }) => [x.user_id, x.last_check]));
+    const porUsuario = new Map<string, Serie[]>();
+    for (const s of (all || []) as Serie[]) porUsuario.set(s.user_id, [...(porUsuario.get(s.user_id) || []), s]);
+    const hechos: string[] = [];
+    for (const [uid, lista] of porUsuario) {
+      const lc = last.get(uid);
+      if (lc && Date.now() - Date.parse(String(lc)) < EVERY - 3600e3) continue;
+      const r = await procesar(admin, lista);
+      await admin.from("settings").upsert({ user_id: uid, last_check: new Date().toISOString(), last_summary: r.summary });
+      hechos.push(uid);
+    }
+    return json({ revisados: hechos.length });
+  }
+
   const auth = req.headers.get("Authorization") || "";
-  const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, {
+  const sb = createClient(URL_, Deno.env.get("SUPABASE_ANON_KEY")!, {
     global: { headers: { Authorization: auth } },
   });
   const { data: u } = await sb.auth.getUser();
   if (!u?.user) return json({ error: "Inicia sesión para buscar capítulos." }, 401);
 
-  let q = sb.from("series").select("id,title,cuevana,season,watch_tpl,alts,check_url,latest,up_to,summary,cover");
+  let q = sb.from("series").select(COLS);
   if (body.ids?.length) q = q.in("id", body.ids);
   const { data: series, error } = await q;
   if (error) return json({ error: error.message }, 500);
 
+  const r = await procesar(sb, series as Serie[]);
+  if (!body.ids?.length) {
+    await sb.from("settings").upsert({ user_id: u.user.id, last_check: new Date().toISOString(), last_summary: r.summary });
+  }
+  return json(r);
+});
+
+const EVERY = 3 * 864e5;
+
+// deno-lint-ignore no-explicit-any
+async function procesar(sb: any, series: Serie[]) {
   const news: string[] = [], failed: string[] = [], fixed: string[] = [], broken: string[] = [];
-  const cola = [...(series as Serie[])];
+  const cola = [...series];
   const trabajador = async () => {
     for (let s = cola.shift(); s; s = cola.shift()) {
       try {
@@ -147,18 +183,14 @@ Deno.serve(async (req) => {
         patch.watch_ok = !!ok;
         if (primary !== s.watch_tpl) patch.watch_tpl = primary;
         if (!ok) broken.push(s.title);
-        await sb.from("series").update(patch).eq("id", s.id);
+        await sb.from("series").update(patch).eq("user_id", s.user_id).eq("id", s.id);
       } catch (_) { failed.push(s.title); }
     }
   };
   await Promise.all([trabajador(), trabajador(), trabajador(), trabajador()]);
-
   const summary = (news.length ? `Nuevos: ${news.join(", ")}.` : "Sin capítulos nuevos.") +
     (fixed.length ? ` Cambiado a otra web: ${fixed.join(", ")}.` : "") +
     (broken.length ? ` Sin enlace que funcione: ${broken.join(", ")}.` : "") +
     (failed.length ? ` No se pudo leer: ${failed.join(", ")}.` : "");
-  if (!body.ids?.length) {
-    await sb.from("settings").upsert({ user_id: u.user.id, last_check: new Date().toISOString(), last_summary: summary });
-  }
-  return json({ news, failed, fixed, broken, summary });
-});
+  return { news, failed, fixed, broken, summary };
+}
