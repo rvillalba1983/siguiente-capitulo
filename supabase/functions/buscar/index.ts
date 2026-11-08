@@ -92,9 +92,9 @@ Deno.serve(async (req) => {
       "https://animeflv.ar/one-piece-episodio-{n}-sub-espanol/",
       "https://www4.animeflv.net/ver/one-piece-{n}",
       "https://cuevana3c.pro/serie/overgeared/episodio-1x{n}",
-      "https://cuevana3k.pro/serie/overgeared/episodio-1x{n}",
-      "https://cuevana3r.pro/serie/overgeared/episodio-1x{n}",
-    ]) enlaces[t] = await enlaceVivo(t, 2);
+      "https://cuevana3w.pro/serie/overgeared/episodio-1x{n}",
+      "https://animeav1.com/media/one-piece/{n}",
+    ]) enlaces[t] = await enlaceVivo(t, 1180);
     return json({ test: out, enlaces });
   }
 
@@ -147,16 +147,37 @@ Deno.serve(async (req) => {
 
 const EVERY = 3 * 864e5;
 
+// Dominios de Cuevana conocidos que funcionan (el primero es el preferido).
+const CUEVANA = ["cuevana3w.pro", "cuevana3c.pro"];
+
+// Lee la página de la serie; si es de Cuevana y falla, prueba los otros dominios.
+async function leerSerie(s: Serie) {
+  const urls = [s.check_url];
+  if (s.cuevana) {
+    const host = new URL(s.check_url).host;
+    for (const h of CUEVANA) if (h !== host) urls.push(s.check_url.replace(host, h));
+  }
+  let ultimo: unknown = null;
+  for (const url of urls) {
+    try {
+      const { html, finalUrl } = await leer(url);
+      const a = analizar(s, html);
+      if (a.max) return { html, finalUrl, a };
+      ultimo = new Error(`0 capítulos en ${finalUrl}`);
+    } catch (e) { ultimo = e; }
+  }
+  throw ultimo;
+}
+
 // deno-lint-ignore no-explicit-any
 async function procesar(sb: any, series: Serie[]) {
-  const news: string[] = [], failed: string[] = [], fixed: string[] = [], broken: string[] = [];
+  const errores: string[] = [], news: string[] = [], failed: string[] = [], fixed: string[] = [], broken: string[] = [];
   const cola = [...series];
   const trabajador = async () => {
     for (let s = cola.shift(); s; s = cola.shift()) {
       try {
-        const { html, finalUrl } = await leer(s.check_url);
-        const a = analizar(s, html);
-        if (!a.max) { failed.push(s.title); continue; }
+        const { html, finalUrl, a } = await leerSerie(s);
+        
         const patch: Record<string, unknown> = { latest_at: new Date().toISOString(), updated_at: new Date().toISOString() };
         if (a.max > (s.latest || 0)) { patch.latest = a.max; news.push(`${s.title} (${a.max - (s.latest || 0)})`); }
         if (!s.cover && a.cover) patch.cover = a.cover;
@@ -187,7 +208,7 @@ async function procesar(sb: any, series: Serie[]) {
         if (primary !== s.watch_tpl) patch.watch_tpl = primary;
         if (!ok) broken.push(s.title);
         await sb.from("series").update(patch).eq("user_id", s.user_id).eq("id", s.id);
-      } catch (_) { failed.push(s.title); }
+      } catch (e) { failed.push(s.title); errores.push(`${s.title}: ${e}`); }
     }
   };
   await Promise.all([trabajador(), trabajador(), trabajador(), trabajador()]);
@@ -195,5 +216,5 @@ async function procesar(sb: any, series: Serie[]) {
     (fixed.length ? ` Cambiado a otra web: ${fixed.join(", ")}.` : "") +
     (broken.length ? ` Sin enlace que funcione: ${broken.join(", ")}.` : "") +
     (failed.length ? ` No se pudo leer: ${failed.join(", ")}.` : "");
-  return { news, failed, fixed, broken, summary };
+  return { news, failed, fixed, broken, summary, errores };
 }

@@ -233,18 +233,19 @@ $("checkBtn").addEventListener("click",()=>runCheck());
 /* ---------- Añadir serie ---------- */
 function parseLink(u){
   let m;try{u=new URL(u.trim())}catch(_){return null}
-  const path=u.pathname;
+  let path=u.pathname;
+  if(/animeav1/.test(u.hostname)&&(m=path.match(/^\/media\/([a-z0-9-]+)(?:\/(\d+))?\/?$/))){u=new URL(`https://animeflv.ar/${m[2]?`${m[1]}-episodio-${m[2]}-sub-espanol/`:`anime/${m[1]}/`}`);path=u.pathname}
   if(/animeflv/.test(u.hostname)){
     let slug,n=0;
     if(m=path.match(/^\/([a-z0-9-]+?)-episodio-(\d+)-sub-espanol\/?$/)){slug=m[1];n=+m[2]}
     else if(m=path.match(/^\/ver\/([a-z0-9-]+)-(\d+)\/?$/)){slug=m[1];n=+m[2]}
     else if(m=path.match(/^\/anime\/([a-z0-9-]+)\/?$/))slug=m[1];
-    if(slug)return{site:"AnimeFLV",slug,n,watch_tpl:`https://animeflv.ar/${slug}-episodio-{n}-sub-espanol/`,alts:[`https://www4.animeflv.net/ver/${slug}-{n}`],check_url:`https://animeflv.ar/anime/${slug}/`};
+    if(slug)return{site:"AnimeFLV",slug,n,watch_tpl:`https://animeflv.ar/${slug}-episodio-{n}-sub-espanol/`,alts:[`https://animeav1.com/media/${slug}/{n}`,`https://www4.animeflv.net/ver/${slug}-{n}`],check_url:`https://animeflv.ar/anime/${slug}/`};
   }
   if(/cuevana/.test(u.hostname)&&(m=path.match(/^\/serie\/([a-z0-9-]+)(?:\/(?:episodio-(\d+)x(\d+)|temporada-(\d+)))?\/?$/))){
     const se=+(m[2]||m[4]||1),p=`/serie/${m[1]}/episodio-${se}x{n}`;
     return{site:"Cuevana",cuevana:true,season:se,slug:m[1],n:m[3]?+m[3]:0,watch_tpl:`https://${u.hostname}${p}`,
-      alts:["cuevana3c.pro","cuevana3k.pro","cuevana3r.pro"].filter(h=>h!==u.hostname).map(h=>`https://${h}${p}`),check_url:`https://${u.hostname}/serie/${m[1]}/temporada-${se}`};
+      alts:["cuevana3w.pro","cuevana3c.pro"].filter(h=>h!==u.hostname).map(h=>`https://${h}${p}`),check_url:`https://${u.hostname}/serie/${m[1]}/temporada-${se}`};
   }
   return null;
 }
