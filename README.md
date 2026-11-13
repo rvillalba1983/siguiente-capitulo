@@ -1,6 +1,6 @@
 # Siguiente Capítulo
 
-Seguimiento personal de series y anime (AnimeFLV y Cuevana): capítulos vistos, aviso de capítulos nuevos y webs alternativas para verlos.
+Seguimiento personal de series y anime (AnimeFLV, Cuevana, SeriesKao y PoseidonHD): capítulos vistos, aviso de capítulos nuevos, menú lateral con las webs para descubrir series y enlace «Dónde verla legalmente» (JustWatch).
 
 - **Web:** `index.html`, servida con GitHub Pages.
 - **Datos e inicio de sesión:** Supabase (tablas `series` y `settings`, cada usuario solo ve sus filas).

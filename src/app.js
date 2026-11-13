@@ -9,6 +9,29 @@ const $=id=>document.getElementById(id);
 const DAY=864e5, EVERY=3*DAY, GRID_MAX=60;
 // Dominios de Cuevana que funcionan. El primero es el preferido.
 const CUEVANA_HOSTS=["cuevana3w.pro","cuevana3.la"];
+// Webs que se pueden usar para buscar series, por si alguna no está integrada.
+const WEBS=[
+  {g:"Anime",items:[
+    {n:"AnimeFLV",u:"https://animeflv.ar",d:"Anime subtitulado. Integrado.",ok:1},
+    {n:"AnimeAV1",u:"https://animeav1.com",d:"Alternativa de anime. Integrado.",ok:1},
+    {n:"JKAnime",u:"https://jkanime.net",d:"Anime con subs y también español latino."},
+  ]},
+  {g:"Series y películas",items:[
+    {n:"Cuevana",u:"https://cuevana3w.pro",d:"La principal. Integrado.",ok:1},
+    {n:"Cuevana (espejo)",u:"https://cuevana3.la",d:"Otro dominio de Cuevana. Integrado.",ok:1},
+    {n:"SeriesKao",u:"https://serieskao.top",d:"Series y doramas. Integrado.",ok:1},
+    {n:"PoseidonHD2",u:"https://www.poseidonhd2.co",d:"Series y películas en HD. Integrado.",ok:1},
+  ]},
+  {g:"Gratis y legal (sin alta)",items:[
+    {n:"Pluto TV",u:"https://pluto.tv/es/",d:"Canales y series gratis con anuncios. No pide cuenta."},
+    {n:"ARTE",u:"https://www.arte.tv/es/",d:"Series y documentales europeos. No pide cuenta."},
+    {n:"YouTube",u:"https://www.youtube.com",d:"Canales oficiales con series y películas. No pide cuenta para ver."},
+    {n:"Samsung TV Plus",u:"https://www.samsung.com/es/tvs/smart-tv/samsung-tv-plus/",d:"Canales gratis en tu tele Samsung, sin cuenta."},
+  ]},
+  {g:"Descubrir",items:[
+    {n:"JustWatch",u:"https://www.justwatch.com/es",d:"Dónde ver legalmente cada serie o película."},
+  ]},
+];
 
 const esc=t=>String(t??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isW=(s,n)=>n<=(s.up_to||0)||(s.extras||[]).includes(n);
@@ -57,24 +80,41 @@ function setWatched(s,n,mode){
 }
 
 /* ---------- Búsqueda (función en Supabase) ---------- */
-// Cuevana bloquea las peticiones que vienen de servidores (Supabase), pero no
-// las de un navegador normal. Si la función no pudo leer una serie de Cuevana,
-// la leemos aquí con el lector público de Jina y guardamos el resultado.
-async function cuevanaCheck(lista){
+// Las webs de series bloquean las peticiones que vienen de servidores
+// (Supabase), pero no las de un navegador normal. Si la función no pudo leer
+// una serie, la leemos aquí con el lector público de Jina y guardamos el resultado.
+const tipoWeb=s=>{
+  const t=`${s.site||""} ${s.check_url||""}`.toLowerCase();
+  if(s.cuevana||t.includes("cuevana"))return"cuevana";
+  if(t.includes("poseidon"))return"poseidon";
+  if(t.includes("serieskao"))return"serieskao";
+  return"anime";
+};
+function maxWeb(tipo,se,txt){
+  let m,re,x=0;
+  if(tipo==="cuevana")re=new RegExp(`episodio-${se}x(\\d+)`,"g");
+  else if(tipo==="poseidon")re=new RegExp(`(?:seasons/${se}/episodes|temporada/${se}/episodio)/(\\d+)`,"g");
+  else if(tipo==="serieskao")re=new RegExp(`#s${se}-e(\\d+)`,"g");
+  else return 0;
+  while((m=re.exec(txt)))x=Math.max(x,+m[1]);
+  return x;
+}
+async function webCheck(lista){
   lista=lista.slice(0,20);
   if(!lista.length)return 0;
   let hechas=0,cortado=false;
   for(let i=0;i<lista.length;i++){
-    const s=lista[i];
-    S.checking=`Leyendo Cuevana (${i+1}/${lista.length})…`;render();
+    const s=lista[i],tipo=tipoWeb(s),se=s.season||1;
+    S.checking=`Leyendo ${tipo} (${i+1}/${lista.length})…`;render();
     try{
       let u=s.check_url;
-      try{const h=new URL(u).host;if(!CUEVANA_HOSTS.includes(h))u=u.replace(h,CUEVANA_HOSTS[0])}catch(_){}
-      const r=await fetch("https://r.jina.ai/"+u,{cache:"no-store"});
+      if(tipo==="cuevana"){try{const h=new URL(u).host;if(!CUEVANA_HOSTS.includes(h))u=u.replace(h,CUEVANA_HOSTS[0])}catch(_){}}
+      const headers=tipo==="cuevana"?{}:{"X-Return-Format":"html"};
+      const r=await fetch("https://r.jina.ai/"+u,{cache:"no-store",headers});
       if(r.status===429){cortado=true;break}
       if(!r.ok)throw new Error("HTTP "+r.status);
       const txt=await r.text();
-      const se=s.season||1,max=(()=>{let m,x=0;const re=new RegExp(`episodio-${se}x(\\d+)`,"g");while((m=re.exec(txt)))x=Math.max(x,+m[1]);return x})();
+      const max=maxWeb(tipo,se,txt);
       if(!max)throw new Error("sin capítulos");
       const patch={latest_at:new Date().toISOString()};
       if(max>(s.latest||0)){patch.latest=max;hechas++}
@@ -84,12 +124,12 @@ async function cuevanaCheck(lista){
       await new Promise(r=>setTimeout(r,3200));
     }catch(_){}
   }
-  if(!cortado)localStorage.setItem("sc_cuevana",String(Date.now()));
+  if(!cortado)localStorage.setItem("sc_webs",String(Date.now()));
   return hechas;
 }
-async function cuevanaFallback(data){
+async function webFallback(data){
   const fallos=new Set(data?.failed||[]);
-  return cuevanaCheck(S.series.filter(s=>s.cuevana&&fallos.has(s.title)));
+  return webCheck(S.series.filter(s=>tipoWeb(s)!=="anime"&&fallos.has(s.title)));
 }
 async function runCheck(ids){
   if(S.checking)return;
@@ -97,8 +137,8 @@ async function runCheck(ids){
   try{
     const {data,error}=await sb.functions.invoke("buscar",{body:ids?{ids}:{}});
     if(error)throw error;
-    const n=await cuevanaFallback(data);
-    if(!ids)toast(data.summary+(n?` Cuevana: ${n} ${n===1?"serie actualizada":"series actualizadas"} en el navegador.`:""),!!(data.broken?.length||data.failed?.length)&&!data.news?.length&&!n);
+    const n=await webFallback(data);
+    if(!ids)toast(data.summary+(n?` Webs: ${n} ${n===1?"serie actualizada":"series actualizadas"} en el navegador.`:""),!!(data.broken?.length||data.failed?.length)&&!data.news?.length&&!n);
     await loadAll();
   }catch(e){toast("No se pudo completar la búsqueda. Inténtalo de nuevo en un rato.",true)}
   finally{S.checking=null;render()}
@@ -107,11 +147,11 @@ function maybeAuto(){
   if(S.autoDone||!S.loaded||!S.series.length)return;
   S.autoDone=true;
   const last=S.settings?.last_check?Date.parse(S.settings.last_check):0;
-  const cuevana=S.series.filter(s=>s.cuevana);
-  const visto=+(localStorage.getItem("sc_cuevana")||0);
+  const otras=S.series.filter(s=>tipoWeb(s)!=="anime");
+  const visto=+(localStorage.getItem("sc_webs")||0);
   if(Date.now()-last>EVERY)runCheck();
-  else if(cuevana.length&&Date.now()-visto>DAY&&!S.checking){
-    (async()=>{try{const n=await cuevanaCheck(cuevana);if(n)toast(`Cuevana: ${n} ${n===1?"serie actualizada":"series actualizadas"}.`)}finally{S.checking=null;render()}})();
+  else if(otras.length&&Date.now()-visto>DAY&&!S.checking){
+    (async()=>{try{const n=await webCheck(otras);if(n)toast(`Webs: ${n} ${n===1?"serie actualizada":"series actualizadas"}.`)}finally{S.checking=null;render()}})();
   }
 }
 
@@ -127,7 +167,7 @@ function posterHtml(s){
     <span class="pimg">${coverHtml(s)}${tag}<span class="prog"><i style="width:${pct}%"></i></span></span>
     <span class="ptitle">${esc(s.title)}</span><span class="psub">${esc(sub)}</span></button>`;
 }
-const siteLine=s=>(s.cuevana?`${host(s.watch_tpl)} · Temporada ${s.season||1}`:host(s.watch_tpl));
+const siteLine=s=>`${host(s.watch_tpl)}${s.season?` · Temporada ${s.season}`:""}`;
 function watchBtns(s,nx,big){
   const warn=s.watch_ok===false?`<span class="warnline">No se pudo comprobar el enlace principal; prueba otra web.</span>`:"";
   const alts=(s.alts||[]).map(t=>`<a class="btn soft small" href="${esc(fill(t,nx))}" target="_blank" rel="noopener noreferrer">${esc(host(t))} ↗</a>`).join("");
@@ -182,13 +222,16 @@ function sheetHtml(s){
         <ul class="webs">${webs}</ul>
         <form class="altform" data-altform><input id="altUrl" type="url" placeholder="Pega el enlace del capítulo ${Math.min(nx,latest)||1} en otra web" aria-label="Enlace del capítulo en otra web"><button type="submit" class="soft small">Añadir web</button></form>
         <p class="note" id="altMsg"></p></div>
-      <div class="foot-act"><span>${s.latest_at?"Comprobada "+ago(s.latest_at):"Sin comprobar todavía"}</span><button type="button" class="link" data-remove>Quitar de mi lista</button></div>
+      <div class="foot-act"><span>${s.latest_at?"Comprobada "+ago(s.latest_at):"Sin comprobar todavía"}</span>
+        <a class="link" href="https://www.justwatch.com/es/buscar?q=${encodeURIComponent(s.title)}" target="_blank" rel="noopener noreferrer">Dónde verla legalmente ↗</a>
+        <button type="button" class="link" data-remove>Quitar de mi lista</button></div>
     </div></div>`;
 }
 function addHtml(){
   return `<div class="card" role="dialog" aria-modal="true" aria-label="Añadir serie"><form class="add" id="addForm">
     <h2 style="font-family:var(--display);font-weight:400;font-size:40px;margin:0">Añadir serie</h2>
-    <label>Enlace a un capítulo de AnimeFLV o Cuevana<input id="addUrl" type="url" placeholder="https://animeflv.ar/nombre-episodio-1-sub-espanol/" required></label>
+    <label>Enlace a un capítulo de AnimeFLV, Cuevana, SeriesKao o PoseidonHD<input id="addUrl" type="url" placeholder="https://animeflv.ar/nombre-episodio-1-sub-espanol/" required></label>
+    <p class="note" style="margin:0">También puedes abrir el menú «Webs» para descubrir series y copiar el enlace de un capítulo.</p>
     <div class="two"><label>Nombre<input id="addTitle" type="text" placeholder="Se rellena con el enlace"></label>
     <label>Último capítulo que viste<input id="addSeen" type="number" min="0" step="1" value="0"></label></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="play" type="submit">Guardar serie</button><button type="button" class="link" data-close>Cancelar</button><span id="addMsg" style="color:var(--muted);font-size:13.5px"></span></div>
@@ -199,7 +242,7 @@ function emptyHtml(){
     <p>Puedes traer las 17 series que ya seguías, con portadas, resúmenes y los capítulos que has visto.</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="button" class="play" id="importBtn">Importar mis series</button><button type="button" class="soft" data-add>Añadir una serie</button></div></div>`;
   return `<div class="welcome"><h2>Empieza tu lista</h2>
-    <p>Añade las series y animes que sigues pegando el enlace de un capítulo de AnimeFLV o Cuevana. La web buscará los capítulos nuevos por ti cada 3 días y recordará cuáles has visto.</p>
+    <p>Añade las series y animes que sigues pegando el enlace de un capítulo de AnimeFLV, Cuevana, SeriesKao o PoseidonHD. También tienes el menú «Webs» para navegar y buscar nuevas. La web buscará los capítulos nuevos por ti cada 3 días y recordará cuáles has visto.</p>
     <div><button type="button" class="play" data-add>Añadir mi primera serie</button></div></div>`;
 }
 function render(){
@@ -269,8 +312,16 @@ document.addEventListener("submit",e=>{
   if(tpl===s.watch_tpl||(s.alts||[]).includes(tpl)){$("altMsg").textContent="Esa web ya está en la lista.";return}
   write(s.id,{alts:[...(s.alts||[]),tpl]});toast(`${host(tpl)} añadida como alternativa`);
 });
-document.addEventListener("keydown",e=>{if(e.key==="Escape"&&S.open){S.open=null;render()}});
+function sitesHtml(){
+  return WEBS.map(g=>`<div class="sgroup"><h3>${esc(g.g)}</h3><ul>${g.items.map(i=>`<li><a href="${esc(i.u)}" target="_blank" rel="noopener noreferrer"><span class="sname">${esc(i.n)}${i.ok?'<em>integrada</em>':""}</span><span class="sdesc">${esc(i.d)}</span></a></li>`).join("")}</ul></div>`).join("");
+}
+function abrirSitios(){if(!$("sitesList").innerHTML)$("sitesList").innerHTML=sitesHtml();$("sitesWrap").hidden=false;$("sitesBtn").setAttribute("aria-expanded","true");document.body.style.overflow="hidden"}
+function cerrarSitios(){$("sitesWrap").hidden=true;$("sitesBtn").setAttribute("aria-expanded","false");document.body.style.overflow=""}
+document.addEventListener("keydown",e=>{if(e.key!=="Escape")return;if(!$("sitesWrap").hidden)cerrarSitios();else if(S.open){S.open=null;render()}});
 $("checkBtn").addEventListener("click",()=>runCheck());
+$("sitesBtn").addEventListener("click",abrirSitios);
+$("sitesClose").addEventListener("click",cerrarSitios);
+$("sitesWrap").addEventListener("click",e=>{if(e.target===$("sitesWrap"))cerrarSitios()});
 
 /* ---------- Añadir serie ---------- */
 function parseLink(u){
@@ -283,6 +334,14 @@ function parseLink(u){
     else if(m=path.match(/^\/ver\/([a-z0-9-]+)-(\d+)\/?$/)){slug=m[1];n=+m[2]}
     else if(m=path.match(/^\/anime\/([a-z0-9-]+)\/?$/))slug=m[1];
     if(slug)return{site:"AnimeFLV",slug,n,watch_tpl:`https://animeflv.ar/${slug}-episodio-{n}-sub-espanol/`,alts:[`https://animeav1.com/media/${slug}/{n}`,`https://www4.animeflv.net/ver/${slug}-{n}`],check_url:`https://animeflv.ar/anime/${slug}/`};
+  }
+  if(/serieskao\./.test(u.hostname)&&(m=path.match(/^\/serie\/([a-z0-9-]+)\/?$/))){
+    const h=u.hash.match(/s(\d+)-e(\d+)/),se=+(h?h[1]:1),n=+(h?h[2]:0);
+    return{site:"SeriesKao",season:se,slug:m[1],name:m[1],n,watch_tpl:`https://${u.hostname}/serie/${m[1]}#s${se}-e{n}`,alts:[],check_url:`https://${u.hostname}/serie/${m[1]}`};
+  }
+  if(/poseidonhd/.test(u.hostname)&&(m=path.match(/^\/serie\/(\d+)\/([a-z0-9-]+)(?:\/temporada\/(\d+)(?:\/episodio\/(\d+))?)?\/?$/))){
+    const se=+(m[3]||1),n=+(m[4]||0);
+    return{site:"PoseidonHD",season:se,slug:`${m[1]}-${m[2]}`,name:m[2],n,watch_tpl:`https://${u.hostname}/serie/${m[1]}/${m[2]}/temporada/${se}/episodio/{n}`,alts:[],check_url:`https://${u.hostname}/serie/${m[1]}/${m[2]}`};
   }
   if(/cuevana/.test(u.hostname)&&(m=path.match(/^\/serie\/([a-z0-9-]+)(?:\/(?:episodio-(\d+)x(\d+)|temporada-(\d+)))?\/?$/))){
     const se=+(m[2]||m[4]||1),p=`/serie/${m[1]}/episodio-${se}x{n}`;
@@ -297,11 +356,12 @@ function wireAdd(){
   $("addForm").addEventListener("submit",async e=>{
     e.preventDefault();
     const p=parseLink($("addUrl").value);
-    if(!p){$("addMsg").textContent="No reconozco ese enlace. Pega el de un capítulo de AnimeFLV o Cuevana.";return}
-    const id=(p.slug+(p.cuevana?"-t"+p.season:"")).slice(0,120);
+    if(!p){$("addMsg").textContent="No reconozco ese enlace. Pega el de AnimeFLV, Cuevana, SeriesKao o PoseidonHD.";return}
+    const conTemporada=p.cuevana||p.site==="SeriesKao"||p.site==="PoseidonHD";
+    const id=(p.slug+(conTemporada?"-t"+p.season:"")).slice(0,120);
     if(S.series.some(s=>s.id===id)){$("addMsg").textContent="Esa serie ya está en tu lista.";return}
     const seen=Math.max(0,parseInt($("addSeen").value||"0",10));
-    const row={id,title:$("addTitle").value.trim()||titleCase(p.slug),site:p.site,cuevana:!!p.cuevana,season:p.season||null,watch_tpl:p.watch_tpl,alts:p.alts,check_url:p.check_url,latest:Math.max(seen,p.n),up_to:seen,extras:[]};
+    const row={id,title:$("addTitle").value.trim()||titleCase(p.name||p.slug),site:p.site,cuevana:!!p.cuevana,season:p.season||null,watch_tpl:p.watch_tpl,alts:p.alts,check_url:p.check_url,latest:Math.max(seen,p.n),up_to:seen,extras:[]};
     const {error}=await sb.from("series").insert(row);
     if(error){$("addMsg").textContent="No se pudo guardar: "+error.message;return}
     S.series.push(row);S.open=null;render();toast("Serie añadida. Busco sus capítulos y su portada…");runCheck([id]);

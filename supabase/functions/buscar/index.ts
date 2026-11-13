@@ -22,9 +22,19 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
 type Serie = {
-  id: string; user_id: string; title: string; cuevana: boolean; season: number | null;
+  id: string; user_id: string; title: string; site: string | null; cuevana: boolean; season: number | null;
   watch_tpl: string; alts: string[] | null; check_url: string; latest: number; up_to: number;
   summary: string | null; cover: string | null;
+};
+
+// Tipo de web a partir del campo `site` o, si es antiguo, de la dirección.
+const tipoDe = (s: Pick<Serie, "site" | "check_url" | "cuevana">) => {
+  const t = `${s.site || ""} ${s.check_url || ""}`.toLowerCase();
+  if (s.cuevana || t.includes("cuevana")) return "cuevana";
+  if (t.includes("poseidon")) return "poseidon";
+  if (t.includes("serieskao")) return "serieskao";
+  if (t.includes("animeflv") || t.includes("animeav1")) return "anime";
+  return "anime";
 };
 
 // ¿Abre la página del capítulo n con esta plantilla? Cuenta como fallo si
@@ -56,17 +66,27 @@ async function leer(url: string) {
   return { html: await r.text(), finalUrl: r.url || url };
 }
 
-function analizar(s: Pick<Serie, "check_url" | "cuevana" | "season">, html: string) {
+function analizar(s: Pick<Serie, "check_url" | "cuevana" | "season" | "site">, html: string) {
   let max = 0, m: RegExpExecArray | null;
-  if (s.cuevana) {
+  const tipo = tipoDe(s as Serie), se = s.season || 1;
+  if (tipo === "cuevana") {
     const slug = (s.check_url.match(/\/serie\/([^/]+)/) || [])[1] || "";
-    const re = new RegExp(`/?serie/${slug}/episodio-${s.season || 1}x(\\d+)`, "g");
+    const re = new RegExp(`/?serie/${slug}/episodio-${se}x(\\d+)`, "g");
     while ((m = re.exec(html))) max = Math.max(max, +m[1]);
     // El lector de Jina devuelve markdown: los enlaces pueden venir sin la barra inicial.
     if (!max) {
-      const re2 = new RegExp(`episodio-${s.season || 1}x(\\d+)`, "g");
+      const re2 = new RegExp(`episodio-${se}x(\\d+)`, "g");
       while ((m = re2.exec(html))) max = Math.max(max, +m[1]);
     }
+  } else if (tipo === "poseidon") {
+    // La ficha de PoseidonHD trae los capítulos en el HTML (seasons/1/episodes/3)
+    // y en los enlaces visibles (temporada/1/episodio/3).
+    const re = new RegExp(`(?:seasons/${se}/episodes|temporada/${se}/episodio)/(\\d+)`, "g");
+    while ((m = re.exec(html))) max = Math.max(max, +m[1]);
+  } else if (tipo === "serieskao") {
+    // SeriesKao usa una sola página con anclas: /serie/slug#s1-e3
+    const re = new RegExp(`#s${se}-e(\\d+)`, "g");
+    while ((m = re.exec(html))) max = Math.max(max, +m[1]);
   } else {
     const slug = (s.check_url.match(/\/anime\/([^/]+)/) || [])[1] || "";
     const re = new RegExp(`/${slug}-episodio-(\\d+)-sub-espanol`, "g");
@@ -86,12 +106,13 @@ function analizar(s: Pick<Serie, "check_url" | "cuevana" | "season">, html: stri
   return { max, cover: og, summary: syn && syn.length >= 60 ? syn : null };
 }
 
-async function leerJina(url: string) {
+async function leerJina(url: string, formato?: "html") {
   const r = await fetch("https://r.jina.ai/" + url, {
     headers: {
       "Accept": "text/plain",
       "X-Cache-Tolerance": "3600",
       "X-Timeout": "25",
+      ...(formato ? { "X-Return-Format": formato } : {}),
       ...(JINA_KEY ? { "Authorization": `Bearer ${JINA_KEY}` } : {}),
     },
     signal: AbortSignal.timeout(50000),
@@ -104,10 +125,10 @@ async function leerJina(url: string) {
 }
 
 // Una sola lectura lenta a la vez para respetar el límite de peticiones del lector.
-function jina(url: string): Promise<string> {
+function jina(url: string, formato?: "html"): Promise<string> {
   const run = jinaCola.then(async () => {
     if (plazo && Date.now() > plazo) throw new Error("tiempo agotado");
-    const txt = await leerJina(url);
+    const txt = await leerJina(url, formato);
     await new Promise((ok) => setTimeout(ok, JINA_GAP));
     return txt;
   });
@@ -125,8 +146,10 @@ Deno.serve(async (req) => {
   // Modo prueba: comprueba que las webs responden, sin tocar datos.
   if (body.test) {
     const pruebas = [
-      { check_url: "https://animeflv.ar/anime/one-piece/", cuevana: false, season: null },
-      { check_url: "https://cuevana3c.pro/serie/overgeared/temporada-1", cuevana: true, season: 1 },
+      { check_url: "https://animeflv.ar/anime/one-piece/", cuevana: false, season: null, site: "AnimeFLV" },
+      { check_url: "https://cuevana3w.pro/serie/overgeared/temporada-1", cuevana: true, season: 1, site: "Cuevana" },
+      { check_url: "https://serieskao.top/serie/la-emperatriz", cuevana: false, season: 1, site: "SeriesKao" },
+      { check_url: "https://www.poseidonhd2.co/serie/94997/la-casa-del-dragon", cuevana: false, season: 1, site: "PoseidonHD" },
     ];
     const out = [];
     for (const p of pruebas) {
@@ -134,9 +157,9 @@ Deno.serve(async (req) => {
         const { html, finalUrl } = await leer(p.check_url);
         const a = analizar(p, html);
         const fila: Record<string, unknown> = { url: p.check_url, finalUrl, ...a, summary: a.summary?.slice(0, 60) };
-        if (!a.max && p.cuevana) {
+        if (!a.max && p.site !== "AnimeFLV") {
           try {
-            const txt = await jina(p.check_url);
+            const txt = await jina(p.check_url, p.cuevana ? undefined : "html");
             const b = analizar(p, txt);
             fila.lector = { max: b.max, cover: b.cover, fuente: (txt.match(/^URL Source:\s*(\S+)/m) || [])[1] || null };
           } catch (e) { fila.lector = { error: String(e) }; }
@@ -156,7 +179,7 @@ Deno.serve(async (req) => {
   }
 
   const URL_ = Deno.env.get("SUPABASE_URL")!;
-  const COLS = "id,user_id,title,cuevana,season,watch_tpl,alts,check_url,latest,up_to,summary,cover";
+  const COLS = "id,user_id,title,site,cuevana,season,watch_tpl,alts,check_url,latest,up_to,summary,cover";
 
   // Modo automático (tarea de cada hora en la base de datos): busca para los
   // usuarios cuya última búsqueda tenga más de 3 días, como mucho 2 por llamada
@@ -211,25 +234,27 @@ const CUEVANA = ["cuevana3w.pro", "cuevana3.la"];
 // Lee la página de la serie; si es de Cuevana y falla, prueba los otros
 // dominios y, cuando la web bloquea al servidor, lee la página con Jina.
 async function leerSerie(s: Serie) {
+  const tipo = tipoDe(s);
   const urls = [s.check_url];
-  if (s.cuevana) {
+  if (tipo === "cuevana") {
     const host = new URL(s.check_url).host;
     for (const h of CUEVANA) if (h !== host) urls.push(s.check_url.replace(host, h));
   }
+  const esperado = tipo === "cuevana" ? /cuevana/i : tipo === "poseidon" ? /poseidon/i : tipo === "serieskao" ? /serieskao/i : null;
   let ultimo: unknown = null;
   for (const url of urls) {
     try {
       const { html, finalUrl } = await leer(url);
       const a = analizar(s, html);
       const hostFinal = new URL(finalUrl).host;
-      // Si Cuevana nos manda a la página de "ver legalmente", está bloqueando.
-      const bloqueado = s.cuevana && !/cuevana/i.test(hostFinal);
+      // Si la web nos manda a la página de "ver legalmente", está bloqueando.
+      const bloqueado = !!esperado && !esperado.test(hostFinal);
       if (a.max && !bloqueado) return { html, finalUrl, a, via: "directo" as const };
       ultimo = new Error(bloqueado ? `bloqueado (${hostFinal})` : `0 capítulos en ${finalUrl}`);
     } catch (e) { ultimo = e; }
-    if (!s.cuevana) continue;
+    if (!esperado) continue;
     try {
-      const txt = await jina(url);
+      const txt = await jina(url, tipo === "cuevana" ? undefined : "html");
       const b = analizar(s, txt);
       const fuente = (txt.match(/^URL Source:\s*(\S+)/m) || [])[1] || url;
       if (b.max) return { html: txt, finalUrl: fuente, a: b, via: "lector" as const };
@@ -252,9 +277,10 @@ async function procesar(sb: any, series: Serie[]) {
         if (a.max > (s.latest || 0)) { patch.latest = a.max; news.push(`${s.title} (${a.max - (s.latest || 0)})`); }
         if (!s.cover && a.cover) patch.cover = a.cover;
         if (!s.summary && a.summary) patch.summary = a.summary;
+        const tipo = tipoDe(s);
         const was = new URL(s.check_url).host, now = new URL(finalUrl).host;
         let primary = s.watch_tpl;
-        if (s.cuevana && was !== now) {
+        if (tipo !== "anime" && was !== now) {
           patch.check_url = s.check_url.replace(was, now);
           primary = s.watch_tpl.replace(was, now);
         }
@@ -264,7 +290,10 @@ async function procesar(sb: any, series: Serie[]) {
         const alts = (s.alts || []).filter((t) => t && t !== primary);
         // Si leímos la web con el lector, el enlace funciona en un navegador
         // normal (es el servidor quien estaba bloqueado): no gastamos otra lectura.
-        let ok: string | null = via === "lector" ? primary : await enlaceVivo(primary, n);
+        // SeriesKao usa anclas (#s1-e3), que no llegan al servidor: no se pueden comprobar así.
+        let ok: string | null = via === "lector" || tipo === "serieskao"
+          ? primary
+          : await enlaceVivo(primary, n);
         if (ok) primary = ok;
         else {
           for (const alt of alts) {
