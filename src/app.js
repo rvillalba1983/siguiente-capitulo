@@ -60,11 +60,10 @@ function setWatched(s,n,mode){
 // Cuevana bloquea las peticiones que vienen de servidores (Supabase), pero no
 // las de un navegador normal. Si la función no pudo leer una serie de Cuevana,
 // la leemos aquí con el lector público de Jina y guardamos el resultado.
-async function cuevanaFallback(data){
-  const fallos=new Set(data?.failed||[]);
-  const lista=S.series.filter(s=>s.cuevana&&fallos.has(s.title)).slice(0,20);
+async function cuevanaCheck(lista){
+  lista=lista.slice(0,20);
   if(!lista.length)return 0;
-  let hechas=0;
+  let hechas=0,cortado=false;
   for(let i=0;i<lista.length;i++){
     const s=lista[i];
     S.checking=`Leyendo Cuevana (${i+1}/${lista.length})…`;render();
@@ -72,7 +71,7 @@ async function cuevanaFallback(data){
       let u=s.check_url;
       try{const h=new URL(u).host;if(!CUEVANA_HOSTS.includes(h))u=u.replace(h,CUEVANA_HOSTS[0])}catch(_){}
       const r=await fetch("https://r.jina.ai/"+u,{cache:"no-store"});
-      if(r.status===429)break;
+      if(r.status===429){cortado=true;break}
       if(!r.ok)throw new Error("HTTP "+r.status);
       const txt=await r.text();
       const se=s.season||1,max=(()=>{let m,x=0;const re=new RegExp(`episodio-${se}x(\\d+)`,"g");while((m=re.exec(txt)))x=Math.max(x,+m[1]);return x})();
@@ -85,7 +84,12 @@ async function cuevanaFallback(data){
       await new Promise(r=>setTimeout(r,3200));
     }catch(_){}
   }
+  if(!cortado)localStorage.setItem("sc_cuevana",String(Date.now()));
   return hechas;
+}
+async function cuevanaFallback(data){
+  const fallos=new Set(data?.failed||[]);
+  return cuevanaCheck(S.series.filter(s=>s.cuevana&&fallos.has(s.title)));
 }
 async function runCheck(ids){
   if(S.checking)return;
@@ -103,7 +107,12 @@ function maybeAuto(){
   if(S.autoDone||!S.loaded||!S.series.length)return;
   S.autoDone=true;
   const last=S.settings?.last_check?Date.parse(S.settings.last_check):0;
+  const cuevana=S.series.filter(s=>s.cuevana);
+  const visto=+(localStorage.getItem("sc_cuevana")||0);
   if(Date.now()-last>EVERY)runCheck();
+  else if(cuevana.length&&Date.now()-visto>DAY&&!S.checking){
+    (async()=>{try{const n=await cuevanaCheck(cuevana);if(n)toast(`Cuevana: ${n} ${n===1?"serie actualizada":"series actualizadas"}.`)}finally{S.checking=null;render()}})();
+  }
 }
 
 /* ---------- Piezas visuales ---------- */
