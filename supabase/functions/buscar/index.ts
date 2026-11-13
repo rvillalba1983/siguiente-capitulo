@@ -10,6 +10,14 @@ const CORS = {
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
+// Cuevana bloquea las peticiones que llegan desde centros de datos (Supabase).
+// Cuando eso pasa leemos la página con el lector público de Jina, que sí entra.
+// Con una clave gratuita de Jina (https://jina.ai/reader) sube de 20 a 500 peticiones/minuto.
+const JINA_KEY = Deno.env.get("JINA_KEY") || "";
+const JINA_GAP = JINA_KEY ? 150 : 3300; // milisegundos entre peticiones al lector
+let jinaCola: Promise<unknown> = Promise.resolve();
+let plazo = 0; // instante límite para empezar lecturas lentas
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
@@ -52,14 +60,21 @@ function analizar(s: Pick<Serie, "check_url" | "cuevana" | "season">, html: stri
   let max = 0, m: RegExpExecArray | null;
   if (s.cuevana) {
     const slug = (s.check_url.match(/\/serie\/([^/]+)/) || [])[1] || "";
-    const re = new RegExp(`/serie/${slug}/episodio-${s.season || 1}x(\\d+)`, "g");
+    const re = new RegExp(`/?serie/${slug}/episodio-${s.season || 1}x(\\d+)`, "g");
     while ((m = re.exec(html))) max = Math.max(max, +m[1]);
+    // El lector de Jina devuelve markdown: los enlaces pueden venir sin la barra inicial.
+    if (!max) {
+      const re2 = new RegExp(`episodio-${s.season || 1}x(\\d+)`, "g");
+      while ((m = re2.exec(html))) max = Math.max(max, +m[1]);
+    }
   } else {
     const slug = (s.check_url.match(/\/anime\/([^/]+)/) || [])[1] || "";
     const re = new RegExp(`/${slug}-episodio-(\\d+)-sub-espanol`, "g");
     while ((m = re.exec(html))) max = Math.max(max, +m[1]);
   }
-  const og = (html.match(/property=["']og:image["'][^>]*content=["']([^"']+)/) || [])[1] || null;
+  const og = (html.match(/property=["']og:image["'][^>]*content=["']([^"']+)/) || [])[1]
+    || (html.match(/https:\/\/image\.tmdb\.org\/t\/p\/w\d+\/[A-Za-z0-9]+\.(?:jpg|jpeg|png|webp)/) || [])[0]
+    || null;
   let syn: string | null = null;
   const ec = html.match(/class=["'][^"']*entry-content[^"']*["'][^>]*>([\s\S]*?)<\/div>/);
   if (ec) syn = strip(ec[1]);
@@ -71,8 +86,39 @@ function analizar(s: Pick<Serie, "check_url" | "cuevana" | "season">, html: stri
   return { max, cover: og, summary: syn && syn.length >= 60 ? syn : null };
 }
 
+async function leerJina(url: string) {
+  const r = await fetch("https://r.jina.ai/" + url, {
+    headers: {
+      "Accept": "text/plain",
+      "X-Cache-Tolerance": "3600",
+      "X-Timeout": "25",
+      ...(JINA_KEY ? { "Authorization": `Bearer ${JINA_KEY}` } : {}),
+    },
+    signal: AbortSignal.timeout(50000),
+  });
+  const txt = await r.text();
+  if (r.status === 429) throw new Error("lector ocupado (429)");
+  if (!r.ok) throw new Error(`lector HTTP ${r.status}`);
+  if (/^\s*(Title:\s*)?429|Too Many Requests/i.test(txt.slice(0, 200))) throw new Error("lector ocupado");
+  return txt;
+}
+
+// Una sola lectura lenta a la vez para respetar el límite de peticiones del lector.
+function jina(url: string): Promise<string> {
+  const run = jinaCola.then(async () => {
+    if (plazo && Date.now() > plazo) throw new Error("tiempo agotado");
+    const txt = await leerJina(url);
+    await new Promise((ok) => setTimeout(ok, JINA_GAP));
+    return txt;
+  });
+  jinaCola = run.catch(() => {});
+  return run;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  // Las lecturas lentas (Jina) se cortan antes del límite de tiempo de la función.
+  plazo = Date.now() + 105000;
   let body: { ids?: string[]; test?: boolean; cron?: boolean } = {};
   try { body = await req.json(); } catch (_) { /* sin cuerpo */ }
 
@@ -84,8 +130,19 @@ Deno.serve(async (req) => {
     ];
     const out = [];
     for (const p of pruebas) {
-      try { const { html, finalUrl } = await leer(p.check_url); const a = analizar(p, html); out.push({ url: p.check_url, finalUrl, ...a, summary: a.summary?.slice(0, 60) }); }
-      catch (e) { out.push({ url: p.check_url, error: String(e) }); }
+      try {
+        const { html, finalUrl } = await leer(p.check_url);
+        const a = analizar(p, html);
+        const fila: Record<string, unknown> = { url: p.check_url, finalUrl, ...a, summary: a.summary?.slice(0, 60) };
+        if (!a.max && p.cuevana) {
+          try {
+            const txt = await jina(p.check_url);
+            const b = analizar(p, txt);
+            fila.lector = { max: b.max, cover: b.cover, fuente: (txt.match(/^URL Source:\s*(\S+)/m) || [])[1] || null };
+          } catch (e) { fila.lector = { error: String(e) }; }
+        }
+        out.push(fila);
+      } catch (e) { out.push({ url: p.check_url, error: String(e) }); }
     }
     const enlaces: Record<string, string | null> = {};
     for (const t of [
@@ -102,8 +159,9 @@ Deno.serve(async (req) => {
   const COLS = "id,user_id,title,cuevana,season,watch_tpl,alts,check_url,latest,up_to,summary,cover";
 
   // Modo automático (tarea de cada hora en la base de datos): busca para los
-  // usuarios cuya última búsqueda tenga más de 3 días, como mucho 4 por llamada
+  // usuarios cuya última búsqueda tenga más de 3 días, como mucho 2 por llamada
   // (los más atrasados primero) para no pasar del tiempo máximo de la función.
+  // Cuevana obliga a leer sus páginas de una en una a través del lector.
   // Llamarlo de más no hace nada.
   if (body.cron) {
     const admin = createClient(URL_, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -117,7 +175,7 @@ Deno.serve(async (req) => {
     const hechos: string[] = [];
     const edad = (uid: string) => { const lc = last.get(uid); return lc ? Date.now() - Date.parse(String(lc)) : Infinity; };
     const toca = [...porUsuario.keys()].filter((uid) => edad(uid) >= EVERY - 3600e3)
-      .sort((a, b) => edad(b) - edad(a)).slice(0, 4);
+      .sort((a, b) => edad(b) - edad(a)).slice(0, 2);
     for (const uid of toca) {
       const r = await procesar(admin, porUsuario.get(uid)!);
       await admin.from("settings").upsert({ user_id: uid, last_check: new Date().toISOString(), last_summary: r.summary });
@@ -148,9 +206,10 @@ Deno.serve(async (req) => {
 const EVERY = 3 * 864e5;
 
 // Dominios de Cuevana conocidos que funcionan (el primero es el preferido).
-const CUEVANA = ["cuevana3w.pro", "cuevana3c.pro"];
+const CUEVANA = ["cuevana3w.pro", "cuevana3.la"];
 
-// Lee la página de la serie; si es de Cuevana y falla, prueba los otros dominios.
+// Lee la página de la serie; si es de Cuevana y falla, prueba los otros
+// dominios y, cuando la web bloquea al servidor, lee la página con Jina.
 async function leerSerie(s: Serie) {
   const urls = [s.check_url];
   if (s.cuevana) {
@@ -162,8 +221,19 @@ async function leerSerie(s: Serie) {
     try {
       const { html, finalUrl } = await leer(url);
       const a = analizar(s, html);
-      if (a.max) return { html, finalUrl, a };
-      ultimo = new Error(`0 capítulos en ${finalUrl}`);
+      const hostFinal = new URL(finalUrl).host;
+      // Si Cuevana nos manda a la página de "ver legalmente", está bloqueando.
+      const bloqueado = s.cuevana && !/cuevana/i.test(hostFinal);
+      if (a.max && !bloqueado) return { html, finalUrl, a, via: "directo" as const };
+      ultimo = new Error(bloqueado ? `bloqueado (${hostFinal})` : `0 capítulos en ${finalUrl}`);
+    } catch (e) { ultimo = e; }
+    if (!s.cuevana) continue;
+    try {
+      const txt = await jina(url);
+      const b = analizar(s, txt);
+      const fuente = (txt.match(/^URL Source:\s*(\S+)/m) || [])[1] || url;
+      if (b.max) return { html: txt, finalUrl: fuente, a: b, via: "lector" as const };
+      ultimo = new Error(`0 capítulos con lector en ${fuente}`);
     } catch (e) { ultimo = e; }
   }
   throw ultimo;
@@ -176,7 +246,7 @@ async function procesar(sb: any, series: Serie[]) {
   const trabajador = async () => {
     for (let s = cola.shift(); s; s = cola.shift()) {
       try {
-        const { html, finalUrl, a } = await leerSerie(s);
+        const { html, finalUrl, a, via } = await leerSerie(s);
         
         const patch: Record<string, unknown> = { latest_at: new Date().toISOString(), updated_at: new Date().toISOString() };
         if (a.max > (s.latest || 0)) { patch.latest = a.max; news.push(`${s.title} (${a.max - (s.latest || 0)})`); }
@@ -192,7 +262,9 @@ async function procesar(sb: any, series: Serie[]) {
         const latest = Math.max(a.max, s.latest || 0);
         const n = Math.min(Math.max(1, (s.up_to || 0) + 1), latest);
         const alts = (s.alts || []).filter((t) => t && t !== primary);
-        let ok = await enlaceVivo(primary, n);
+        // Si leímos la web con el lector, el enlace funciona en un navegador
+        // normal (es el servidor quien estaba bloqueado): no gastamos otra lectura.
+        let ok: string | null = via === "lector" ? primary : await enlaceVivo(primary, n);
         if (ok) primary = ok;
         else {
           for (const alt of alts) {

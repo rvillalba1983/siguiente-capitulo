@@ -7,6 +7,8 @@ const sb=window.supabase.createClient(SB_URL,SB_KEY);
 const S={user:null,series:[],settings:null,open:null,confirm:null,removing:false,checking:null,loaded:false,autoDone:false};
 const $=id=>document.getElementById(id);
 const DAY=864e5, EVERY=3*DAY, GRID_MAX=60;
+// Dominios de Cuevana que funcionan. El primero es el preferido.
+const CUEVANA_HOSTS=["cuevana3w.pro","cuevana3.la"];
 
 const esc=t=>String(t??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isW=(s,n)=>n<=(s.up_to||0)||(s.extras||[]).includes(n);
@@ -55,13 +57,44 @@ function setWatched(s,n,mode){
 }
 
 /* ---------- Búsqueda (función en Supabase) ---------- */
+// Cuevana bloquea las peticiones que vienen de servidores (Supabase), pero no
+// las de un navegador normal. Si la función no pudo leer una serie de Cuevana,
+// la leemos aquí con el lector público de Jina y guardamos el resultado.
+async function cuevanaFallback(data){
+  const fallos=new Set(data?.failed||[]);
+  const lista=S.series.filter(s=>s.cuevana&&fallos.has(s.title)).slice(0,20);
+  if(!lista.length)return 0;
+  let hechas=0;
+  for(let i=0;i<lista.length;i++){
+    const s=lista[i];
+    S.checking=`Leyendo Cuevana (${i+1}/${lista.length})…`;render();
+    try{
+      let u=s.check_url;
+      try{const h=new URL(u).host;if(!CUEVANA_HOSTS.includes(h))u=u.replace(h,CUEVANA_HOSTS[0])}catch(_){}
+      const r=await fetch("https://r.jina.ai/"+u,{cache:"no-store"});
+      if(r.status===429)break;
+      if(!r.ok)throw new Error("HTTP "+r.status);
+      const txt=await r.text();
+      const se=s.season||1,max=(()=>{let m,x=0;const re=new RegExp(`episodio-${se}x(\\d+)`,"g");while((m=re.exec(txt)))x=Math.max(x,+m[1]);return x})();
+      if(!max)throw new Error("sin capítulos");
+      const patch={latest_at:new Date().toISOString()};
+      if(max>(s.latest||0)){patch.latest=max;hechas++}
+      if(s.watch_ok===false)patch.watch_ok=true;
+      if(!s.cover){const c=txt.match(/https:\/\/image\.tmdb\.org\/t\/p\/w\d+\/[A-Za-z0-9]+\.(?:jpg|jpeg|png|webp)/);if(c)patch.cover=c[0]}
+      await write(s.id,patch);
+      await new Promise(r=>setTimeout(r,3200));
+    }catch(_){}
+  }
+  return hechas;
+}
 async function runCheck(ids){
   if(S.checking)return;
   S.checking=ids?"Buscando…":`Buscando en ${S.series.length} series…`;render();
   try{
     const {data,error}=await sb.functions.invoke("buscar",{body:ids?{ids}:{}});
     if(error)throw error;
-    if(!ids)toast(data.summary,!!(data.broken?.length||data.failed?.length)&&!data.news?.length);
+    const n=await cuevanaFallback(data);
+    if(!ids)toast(data.summary+(n?` Cuevana: ${n} ${n===1?"serie actualizada":"series actualizadas"} en el navegador.`:""),!!(data.broken?.length||data.failed?.length)&&!data.news?.length&&!n);
     await loadAll();
   }catch(e){toast("No se pudo completar la búsqueda. Inténtalo de nuevo en un rato.",true)}
   finally{S.checking=null;render()}
@@ -245,7 +278,7 @@ function parseLink(u){
   if(/cuevana/.test(u.hostname)&&(m=path.match(/^\/serie\/([a-z0-9-]+)(?:\/(?:episodio-(\d+)x(\d+)|temporada-(\d+)))?\/?$/))){
     const se=+(m[2]||m[4]||1),p=`/serie/${m[1]}/episodio-${se}x{n}`;
     return{site:"Cuevana",cuevana:true,season:se,slug:m[1],n:m[3]?+m[3]:0,watch_tpl:`https://${u.hostname}${p}`,
-      alts:["cuevana3w.pro","cuevana3c.pro"].filter(h=>h!==u.hostname).map(h=>`https://${h}${p}`),check_url:`https://${u.hostname}/serie/${m[1]}/temporada-${se}`};
+      alts:[...CUEVANA_HOSTS,u.hostname].filter((h,i,a)=>a.indexOf(h)===i&&h!==u.hostname).map(h=>`https://${h}${p}`),check_url:`https://${u.hostname}/serie/${m[1]}/temporada-${se}`};
   }
   return null;
 }
