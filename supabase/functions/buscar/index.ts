@@ -33,6 +33,7 @@ const tipoDe = (s: Pick<Serie, "site" | "check_url" | "cuevana">) => {
   if (s.cuevana || t.includes("cuevana")) return "cuevana";
   if (t.includes("poseidon")) return "poseidon";
   if (t.includes("serieskao")) return "serieskao";
+  if (t.includes("jkanime")) return "jkanime";
   if (t.includes("animeflv") || t.includes("animeav1")) return "anime";
   return "anime";
 };
@@ -86,6 +87,11 @@ function analizar(s: Pick<Serie, "check_url" | "cuevana" | "season" | "site">, h
   } else if (tipo === "serieskao") {
     // SeriesKao usa una sola página con anclas: /serie/slug#s1-e3
     const re = new RegExp(`#s${se}-e(\\d+)`, "g");
+    while ((m = re.exec(html))) max = Math.max(max, +m[1]);
+  } else if (tipo === "jkanime") {
+    // JKAnime muestra solo el último capítulo: /slug/1180
+    const slug = (s.check_url.match(/\/([a-z0-9-]+)\/?$/) || [])[1] || "";
+    const re = new RegExp(`/${slug}/(\\d+)`, "g");
     while ((m = re.exec(html))) max = Math.max(max, +m[1]);
   } else {
     const slug = (s.check_url.match(/\/anime\/([^/]+)/) || [])[1] || "";
@@ -150,6 +156,7 @@ Deno.serve(async (req) => {
       { check_url: "https://cuevana3w.pro/serie/overgeared/temporada-1", cuevana: true, season: 1, site: "Cuevana" },
       { check_url: "https://serieskao.top/serie/la-emperatriz", cuevana: false, season: 1, site: "SeriesKao" },
       { check_url: "https://www.poseidonhd2.co/serie/94997/la-casa-del-dragon", cuevana: false, season: 1, site: "PoseidonHD" },
+      { check_url: "https://jkanime.net/one-piece/", cuevana: false, season: null, site: "JKAnime" },
     ];
     const out = [];
     for (const p of pruebas) {
@@ -291,7 +298,7 @@ async function procesar(sb: any, series: Serie[]) {
         // Si leímos la web con el lector, el enlace funciona en un navegador
         // normal (es el servidor quien estaba bloqueado): no gastamos otra lectura.
         // SeriesKao usa anclas (#s1-e3), que no llegan al servidor: no se pueden comprobar así.
-        let ok: string | null = via === "lector" || tipo === "serieskao"
+        let ok: string | null = via === "lector" || tipo === "serieskao" || tipo === "jkanime"
           ? primary
           : await enlaceVivo(primary, n);
         if (ok) primary = ok;
