@@ -172,7 +172,17 @@ Deno.serve(async (req) => {
           } catch (e) { fila.lector = { error: String(e) }; }
         }
         out.push(fila);
-      } catch (e) { out.push({ url: p.check_url, error: String(e) }); }
+      } catch (e) {
+        const fila: Record<string, unknown> = { url: p.check_url, error: String(e) };
+        if (p.site !== "AnimeFLV" && p.site !== "JKAnime") {
+          try {
+            const txt = await jina(p.check_url, p.cuevana ? undefined : "html");
+            const b = analizar(p, txt);
+            fila.lector = { max: b.max, cover: b.cover, fuente: (txt.match(/^URL Source:\s*(\S+)/m) || [])[1] || null };
+          } catch (e2) { fila.lector = { error: String(e2) }; }
+        }
+        out.push(fila);
+      }
     }
     const enlaces: Record<string, string | null> = {};
     for (const t of [
