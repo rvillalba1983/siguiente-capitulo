@@ -4,7 +4,7 @@ const SB_URL="https://dfxnudfolvtlbkoypxav.supabase.co";
 const SB_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRmeG51ZGZvbHZ0bGJrb3lweGF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5NTk0NDAsImV4cCI6MjEwODUzNTQ0MH0.hdorCO3yrXRBRZ-B-P_caZwDVW1gW1-5QJ0a7C_rvig";
 const sb=window.supabase.createClient(SB_URL,SB_KEY);
 
-const S={user:null,series:[],settings:null,open:null,confirm:null,removing:false,checking:null,loaded:false,autoDone:false};
+const S={user:null,series:[],settings:null,open:null,confirm:null,removing:false,checking:null,check:null,loaded:false,autoDone:false};
 const $=id=>document.getElementById(id);
 const DAY=864e5, EVERY=3*DAY, GRID_MAX=60;
 // Dominios de Cuevana que funcionan. El primero es el preferido.
@@ -46,6 +46,41 @@ function ago(iso){if(!iso)return null;const m=Math.round((Date.now()-Date.parse(
 function normalize(up_to,extras){const set=new Set(extras.filter(n=>n>up_to));while(set.has(up_to+1)){set.delete(up_to+1);up_to++}return{up_to,extras:[...set].sort((a,b)=>a-b)}}
 let toastT;function toast(t,warn){const el=$("toast");el.textContent=t;el.className="toast"+(warn?" warn":"");el.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>el.hidden=true,warn?7000:4200)}
 
+/* ---------- Progreso de búsqueda ---------- */
+function fmtElapsed(t){const s=Math.max(0,Math.round((Date.now()-t)/1e3));if(s<60)return s+" s";const m=Math.floor(s/60);return m+" min "+(s%60)+" s"}
+function checkItemList(lista){return lista.map(s=>({id:s.id,title:s.title,cover:s.cover,web:host(s.watch_tpl),state:"wait"}))}
+function startCheck(mode,items,base){S.check={mode,total:items.length,done:0,start:Date.now(),current:"",items,base:base||new Map(),hidden:false};paintCheck()}
+function recalcCheck(){const c=S.check;if(c)c.done=c.items.filter(i=>i.state==="done"||i.state==="new").length}
+function paintCheck(){
+  const c=S.check,p=$("checkPanel");
+  if(!c||c.hidden){p.hidden=true;return}
+  p.hidden=false;
+  $("checkTitle").textContent=c.mode==="otras"?"Buscando en otras webs":"Buscando capítulos nuevos";
+  $("checkNow").textContent=c.current||(c.mode==="otras"?"Probando webs…":"Consultando varias webs a la vez…");
+  $("checkCount").textContent=c.mode==="otras"
+    ?`Probadas ${c.done} de ${c.total} webs · quedan ${Math.max(0,c.total-c.done)}`
+    :`Revisadas ${c.done} de ${c.total} series · quedan ${Math.max(0,c.total-c.done)}`;
+  $("checkBar").style.width=(c.total?Math.round(c.done/c.total*100):0)+"%";
+  const list=$("checkList"),st=list.scrollTop;
+  list.innerHTML=c.items.map(it=>{
+    const icon=it.state==="done"?"✓":it.state==="new"?"★":it.state==="fail"?"!":"…";
+    const thumb=it.cover?`<img src="${esc(it.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`:"";
+    return `<li class="${it.state}"><span class="cp-thumb">${thumb}</span><span class="cp-name">${esc(it.title)}<em>${esc(it.web)}</em></span><span class="cp-state">${icon}</span></li>`;
+  }).join("");
+  list.scrollTop=st;
+}
+// Cuando la base de datos avisa de que una serie cambió, la damos por revisada.
+function noteUpdate(row){
+  const c=S.check;if(!c||c.mode!=="run")return;
+  const it=c.items.find(x=>x.id===row.id);if(!it||it.state==="done"||it.state==="new")return;
+  const b=c.base.get(row.id),at=row.latest_at||null;
+  if(at&&(!b||at!==b.at)){
+    it.state=(row.latest||0)>(b?.latest||0)?"new":"done";
+    c.current=`${row.title} · ${host(row.watch_tpl)}`;
+    recalcCheck();paintCheck();
+  }
+}
+
 /* ---------- Datos ---------- */
 const queues={};
 function write(id,patch){
@@ -66,8 +101,9 @@ function subscribe(){
   channel=sb.channel("cambios")
     .on("postgres_changes",{event:"*",schema:"public",table:"series",filter:`user_id=eq.${S.user.id}`},p=>{
       if(p.eventType==="DELETE"){S.series=S.series.filter(x=>x.id!==p.old.id)}
-      else{const i=S.series.findIndex(x=>x.id===p.new.id);if(i<0)S.series.push(p.new);else S.series[i]=p.new}
-      if(!S.checking)render();
+      else{const i=S.series.findIndex(x=>x.id===p.new.id);if(i<0)S.series.push(p.new);else S.series[i]=p.new;
+        if(S.check)noteUpdate(p.new)}
+      if(!S.checking)render();else paintCheck();
     })
     .on("postgres_changes",{event:"*",schema:"public",table:"settings",filter:`user_id=eq.${S.user.id}`},p=>{S.settings=p.new;render()})
     .subscribe();
@@ -103,10 +139,17 @@ function maxWeb(tipo,se,txt){
 async function webCheck(lista){
   lista=lista.slice(0,20);
   if(!lista.length)return 0;
+  const c=S.check;
   let hechas=0,cortado=false;
   for(let i=0;i<lista.length;i++){
     const s=lista[i],tipo=tipoWeb(s),se=s.season||1;
     if(tipo==="jkanime"||tipo==="animegratis")continue;
+    if(c){
+      const it=c.items.find(x=>x.id===s.id);
+      if(it&&it.state==="fail")it.state="retry";
+      c.current=`${s.title} · ${tipo}`;
+      paintCheck();
+    }
     S.checking=`Leyendo ${tipo} (${i+1}/${lista.length})…`;render();
     try{
       let u=s.check_url;
@@ -121,8 +164,9 @@ async function webCheck(lista){
       const patch={latest_at:new Date().toISOString()};
       if(max>(s.latest||0)){patch.latest=max;hechas++}
       if(s.watch_ok===false)patch.watch_ok=true;
-      if(!s.cover){const c=txt.match(/https:\/\/image\.tmdb\.org\/t\/p\/w\d+\/[A-Za-z0-9]+\.(?:jpg|jpeg|png|webp)/);if(c)patch.cover=c[0]}
+      if(!s.cover){const c2=txt.match(/https:\/\/image\.tmdb\.org\/t\/p\/w\d+\/[A-Za-z0-9]+\.(?:jpg|jpeg|png|webp)/);if(c2)patch.cover=c2[0]}
       await write(s.id,patch);
+      if(c){const it=c.items.find(x=>x.id===s.id);if(it&&it.state!=="done"&&it.state!=="new")it.state=(patch.latest&&patch.latest>(c.base.get(s.id)?.latest||0))?"new":"done";recalcCheck();paintCheck()}
       await new Promise(r=>setTimeout(r,3200));
     }catch(_){}
   }
@@ -131,32 +175,39 @@ async function webCheck(lista){
 }
 async function buscarOtrasWebs(s){
   if(S.checking)return;
-  S.checking="Buscando en otras webs…";render();
+  S.checking="Buscando en otras webs…";
+  const fuentes=FUENTES_BUSQUEDA.filter(f=>!((s.watch_tpl||"").includes(f.host)||(s.alts||[]).some(t=>t.includes(f.host))));
+  startCheck("otras",fuentes.map((f,i)=>({id:"f"+i,title:f.nombre,web:f.host,cover:s.cover,state:"wait"})));
+  render();
   const encontradas=[];
-  for(const f of FUENTES_BUSQUEDA){
-    if((s.watch_tpl||"").includes(f.host)||(s.alts||[]).some(t=>t.includes(f.host)))continue;
+  for(let i=0;i<fuentes.length;i++){
+    const f=fuentes[i],c=S.check,it=c.items[i];
+    c.current=`${s.title} · ${f.nombre}`;
+    it.state="retry";paintCheck();
     try{
       const r=await fetch(f.buscar(s.title),{cache:"no-store"});
       if(!r.ok)throw new Error("HTTP "+r.status);
       let html=await r.text();
       if(f.jina&&/Just a moment|security verification/i.test(html)){try{const r2=await fetch("https://r.jina.ai/"+f.buscar(s.title),{cache:"no-store",headers:{"X-Return-Format":"html"}});if(r2.ok)html=await r2.text()}catch(_){}}
       const m=html.match(f.serieRe);
-      if(!m)continue;
+      if(!m)throw 0;
       const slug=m[1];
       let spHtml=html;
       try{const r2=await fetch(f.checkUrl(slug),{cache:"no-store"});if(r2.ok)spHtml=await r2.text();else if(f.jina){const r3=await fetch("https://r.jina.ai/"+f.checkUrl(slug),{cache:"no-store",headers:{"X-Return-Format":"html"}});if(r3.ok)spHtml=await r3.text()}}catch(_){}
       const max=f.episodioRe(slug,spHtml);
-      if(!max)continue;
+      if(!max)throw 0;
       const tpl=f.template(slug);
       const alts=[...(s.alts||[])];
       if(!alts.includes(tpl))alts.push(tpl);
       for(const a of f.alts(slug))if(!alts.includes(a))alts.push(a);
       await write(s.id,{alts});
       encontradas.push(`${f.nombre} (${max})`);
+      it.state="new";
       await new Promise(r=>setTimeout(r,1500));
-    }catch(_){}
+    }catch(_){it.state="done"}
+    recalcCheck();paintCheck();
   }
-  S.checking=null;render();
+  S.checking=null;S.check=null;render();
   if(encontradas.length)toast(`Encontrado en: ${encontradas.join(", ")}`);
   else toast("No se encontró en otras webs.",true);
 }
@@ -166,15 +217,35 @@ async function webFallback(data){
 }
 async function runCheck(ids){
   if(S.checking)return;
-  S.checking=ids?"Buscando…":`Buscando en ${S.series.length} series…`;render();
+  const lista=ids?S.series.filter(s=>ids.includes(s.id)):S.series;
+  if(!lista.length)return;
+  S.checking=ids?"Buscando…":`Buscando en ${lista.length} series…`;
+  const items=checkItemList(lista);
+  const base=new Map(items.map(it=>{const s=lista.find(x=>x.id===it.id);return[it.id,{at:s.latest_at||null,latest:s.latest||0}]}));
+  startCheck("run",items,base);
+  render();
   try{
     const {data,error}=await sb.functions.invoke("buscar",{body:ids?{ids}:{}});
     if(error)throw error;
+    const c=S.check;
+    if(c){
+      const fallos=new Set(data.failed||[]);
+      const nuevos=new Set((data.news||[]).map(x=>String(x).replace(/\s*\(\d+\)$/,"")));
+      for(const it of c.items){
+        if(fallos.has(it.title)){if(it.state==="wait")it.state="fail";continue}
+        if(nuevos.has(it.title)){it.state="new";continue}
+        if(it.state==="wait"||it.state==="retry"){
+          const s=S.series.find(x=>x.id===it.id),b=c.base.get(it.id);
+          it.state=(s&&b&&b.latest!=null&&(s.latest||0)>b.latest)?"new":"done";
+        }
+      }
+      recalcCheck();paintCheck();
+    }
     const n=await webFallback(data);
     if(!ids)toast(data.summary+(n?` Webs: ${n} ${n===1?"serie actualizada":"series actualizadas"} en el navegador.`:""),!!(data.broken?.length||data.failed?.length)&&!data.news?.length&&!n);
     await loadAll();
   }catch(e){toast("No se pudo completar la búsqueda. Inténtalo de nuevo en un rato.",true)}
-  finally{S.checking=null;render()}
+  finally{S.checking=null;S.check=null;render()}
 }
 function maybeAuto(){
   if(S.autoDone||!S.loaded||!S.series.length)return;
@@ -214,19 +285,6 @@ function watchBtns(s,nx,big){
   return `<a class="btn play" href="${esc(fill(s.watch_tpl,nx))}" target="_blank" rel="noopener noreferrer"><span class="tri"></span>Ver capítulo ${nx}</a>
     <button type="button" class="soft" data-seen="${esc(s.id)}" data-n="${nx}">Marcar el ${nx} como visto</button>
     ${big?"":`${alts?`<span class="alts"><span>Otras webs:</span>${alts}</span>`:""}`}${warn}`;
-}
-function heroHtml(s){
-  if(!s)return"";
-  const p=pending(s),nx=nextEp(s);
-  return `<section class="hero gut"><div class="hero-bg"${bgStyle(s)}></div>
-    <div class="hero-in">${s.cover?`<div class="hero-cover">${imgTag(s.cover)}</div>`:""}
-    <div class="hero-txt">
-      <p class="hero-kicker">${p} ${p===1?"capítulo nuevo":"capítulos nuevos"} para ver</p>
-      <h2>${esc(s.title)}</h2>
-      <div class="facts"><span>Vas por el ${lastSeen(s)}</span><span>${s.latest} disponibles</span><span>${esc(siteLine(s))}</span></div>
-      ${s.summary?`<p class="sum">${esc(s.summary)}</p>`:""}
-      <div class="row-act">${watchBtns(s,nx,true)}<button type="button" class="soft" data-open="${esc(s.id)}">Episodios</button></div>
-    </div></div></section>`;
 }
 function sheetHtml(s){
   const p=pending(s),nx=nextEp(s),out=nx<=(s.latest||0),latest=s.latest||0;
@@ -295,8 +353,6 @@ function render(){
   const withNew=all.filter(s=>pending(s)>0).sort((a,b)=>(b.latest_at||"").localeCompare(a.latest_at||"")||pending(a)-pending(b));
   const waiting=all.filter(s=>!pending(s)&&!finished(s)).sort((a,b)=>a.title.localeCompare(b.title,"es"));
   const done=all.filter(s=>!pending(s)&&finished(s));
-  const featured=withNew.find(s=>s.cover)||withNew[0];
-  $("hero").innerHTML=S.loaded?heroHtml(featured):"";
   if(!S.loaded)$("rows").innerHTML=`<p class="empty">Cargando tus series…</p>`;
   else if(!all.length)$("rows").innerHTML=emptyHtml();
   else{
@@ -309,6 +365,7 @@ function render(){
   }
   $("status").textContent=S.checking?S.checking:(S.settings?.last_check?`Buscado ${ago(S.settings.last_check)}`:"");
   $("checkBtn").disabled=!!S.checking||!all.length;
+  paintCheck();
   const sh=$("sheet");
   if(S.open==="__add"){if(sh.hidden||!sh.querySelector("#addForm")){sh.innerHTML=addHtml();sh.hidden=false;wireAdd();setTimeout(()=>$("addUrl")&&$("addUrl").focus(),30)}}
   else if(S.open){const s=all.find(x=>x.id===S.open);if(!s){S.open=null;sh.hidden=true}else{const keep=$("altUrl")?.value||"";sh.innerHTML=sheetHtml(s);sh.hidden=false;if(keep&&$("altUrl"))$("altUrl").value=keep}}
@@ -319,6 +376,7 @@ function render(){
 /* ---------- Interacción ---------- */
 document.addEventListener("click",async e=>{
   const t=e.target;
+  if(t.closest("[data-check-close]")){if(S.check){S.check.hidden=true;paintCheck()}return}
   if(t.id==="importBtn"){importSeed();return}
   if(t.id==="logoutBtn"){await sb.auth.signOut();return}
   const o=t.closest("[data-open]");if(o){S.open=o.dataset.open;S.confirm=null;S.removing=false;return render()}
@@ -452,5 +510,6 @@ sb.auth.onAuthStateChange((_ev,session)=>{
   if(u){render();loadAll();subscribe()}else if(first){render()}else{if(channel)sb.removeChannel(channel);render()}
 });
 setInterval(()=>{if(!S.open&&S.user)render()},60000);
+setInterval(()=>{const c=S.check,el=$("checkTime");if(c&&el&&!c.hidden)el.textContent=fmtElapsed(c.start)},1000);
 render();
 })();
