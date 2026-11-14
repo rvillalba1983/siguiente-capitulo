@@ -206,7 +206,8 @@ const WEBS=[
   {g:"Anime",items:[
     {n:"AnimeFLV",u:"https://animeflv.ar",d:"Anime subtitulado. Integrado.",ok:1},
     {n:"AnimeAV1",u:"https://animeav1.com",d:"Alternativa de anime. Integrado.",ok:1},
-    {n:"JKAnime",u:"https://jkanime.net",d:"Anime subtitulado y en español latino. Integrado.",ok:1},
+    {n:"JKAnime",u:"https://jkanime.net",d:"Anime subtitulado y en español latino. Integrado (actualización manual).",ok:1},
+    {n:"AnimeGratis",u:"https://animegratis.net",d:"Más de 5.000 animes en sub, latino y castellano. Sin registro. Integrado (actualización manual).",ok:1},
   ]},
   {g:"Series y películas",items:[
     {n:"Cuevana",u:"https://cuevana3w.pro",d:"La principal. Integrado.",ok:1},
@@ -297,7 +298,7 @@ async function webCheck(lista){
   let hechas=0,cortado=false;
   for(let i=0;i<lista.length;i++){
     const s=lista[i],tipo=tipoWeb(s),se=s.season||1;
-    if(tipo==="jkanime")continue;
+    if(tipo==="jkanime"||tipo==="animegratis")continue;
     S.checking=`Leyendo ${tipo} (${i+1}/${lista.length})…`;render();
     try{
       let u=s.check_url;
@@ -322,7 +323,7 @@ async function webCheck(lista){
 }
 async function webFallback(data){
   const fallos=new Set(data?.failed||[]);
-  return webCheck(S.series.filter(s=>tipoWeb(s)!=="anime"&&tipoWeb(s)!=="jkanime"&&fallos.has(s.title)));
+  return webCheck(S.series.filter(s=>tipoWeb(s)!=="anime"&&tipoWeb(s)!=="jkanime"&&tipoWeb(s)!=="animegratis"&&fallos.has(s.title)));
 }
 async function runCheck(ids){
   if(S.checking)return;
@@ -340,7 +341,7 @@ function maybeAuto(){
   if(S.autoDone||!S.loaded||!S.series.length)return;
   S.autoDone=true;
   const last=S.settings?.last_check?Date.parse(S.settings.last_check):0;
-  const otras=S.series.filter(s=>tipoWeb(s)!=="anime"&&tipoWeb(s)!=="jkanime");
+  const otras=S.series.filter(s=>tipoWeb(s)!=="anime"&&tipoWeb(s)!=="jkanime"&&tipoWeb(s)!=="animegratis");
   const visto=+(localStorage.getItem("sc_webs")||0);
   if(Date.now()-last>EVERY)runCheck();
   else if(otras.length&&Date.now()-visto>DAY&&!S.checking){
@@ -524,6 +525,10 @@ function parseLink(u){
   if(/jkanime\./.test(u.hostname)&&(m=path.match(/^\/([a-z0-9-]+)(?:\/(\d+))?\/?$/))){
     const slug=m[1],n=+(m[2]||0);
     return{site:"JKAnime",slug,n,watch_tpl:`https://${u.hostname}/${slug}/{n}`,alts:[],check_url:`https://${u.hostname}/${slug}/`};
+  }
+  if(/animegratis\./.test(u.hostname)&&(m=path.match(/^\/anime\/([a-z0-9-]+)(?:\/episodio-(\d+))?\/?$/))){
+    const slug=m[1],n=+(m[2]||0);
+    return{site:"AnimeGratis",slug,n,watch_tpl:`https://${u.hostname}/anime/${slug}/episodio-{n}`,alts:[],check_url:`https://${u.hostname}/anime/${slug}`};
   }
   if(/animeflv/.test(u.hostname)){
     let slug,n=0;

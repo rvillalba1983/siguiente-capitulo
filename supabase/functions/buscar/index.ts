@@ -34,6 +34,7 @@ const tipoDe = (s: Pick<Serie, "site" | "check_url" | "cuevana">) => {
   if (t.includes("poseidon")) return "poseidon";
   if (t.includes("serieskao")) return "serieskao";
   if (t.includes("jkanime")) return "jkanime";
+  if (t.includes("animegratis")) return "animegratis";
   if (t.includes("animeflv") || t.includes("animeav1")) return "anime";
   return "anime";
 };
@@ -92,6 +93,11 @@ function analizar(s: Pick<Serie, "check_url" | "cuevana" | "season" | "site">, h
     // JKAnime muestra solo el último capítulo: /slug/1180
     const slug = (s.check_url.match(/\/([a-z0-9-]+)\/?$/) || [])[1] || "";
     const re = new RegExp(`/${slug}/(\\d+)`, "g");
+    while ((m = re.exec(html))) max = Math.max(max, +m[1]);
+  } else if (tipo === "animegratis") {
+    // AnimeGratis: /anime/slug/episodio-1180
+    const slug = (s.check_url.match(/\/anime\/([^/]+)/) || [])[1] || "";
+    const re = new RegExp(`/${slug}/episodio-(\\d+)`, "g");
     while ((m = re.exec(html))) max = Math.max(max, +m[1]);
   } else {
     const slug = (s.check_url.match(/\/anime\/([^/]+)/) || [])[1] || "";
@@ -308,7 +314,7 @@ async function procesar(sb: any, series: Serie[]) {
         // Si leímos la web con el lector, el enlace funciona en un navegador
         // normal (es el servidor quien estaba bloqueado): no gastamos otra lectura.
         // SeriesKao usa anclas (#s1-e3), que no llegan al servidor: no se pueden comprobar así.
-        let ok: string | null = via === "lector" || tipo === "serieskao" || tipo === "jkanime"
+        let ok: string | null = via === "lector" || tipo === "serieskao" || tipo === "jkanime" || tipo === "animegratis"
           ? primary
           : await enlaceVivo(primary, n);
         if (ok) primary = ok;
