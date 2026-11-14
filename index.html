@@ -321,6 +321,37 @@ async function webCheck(lista){
   if(!cortado)localStorage.setItem("sc_webs",String(Date.now()));
   return hechas;
 }
+async function buscarOtrasWebs(s){
+  if(S.checking)return;
+  S.checking="Buscando en otras webs…";render();
+  const encontradas=[];
+  for(const f of FUENTES_BUSQUEDA){
+    if((s.watch_tpl||"").includes(f.host)||(s.alts||[]).some(t=>t.includes(f.host)))continue;
+    try{
+      const r=await fetch(f.buscar(s.title),{cache:"no-store"});
+      if(!r.ok)throw new Error("HTTP "+r.status);
+      let html=await r.text();
+      if(f.jina&&/Just a moment|security verification/i.test(html)){try{const r2=await fetch("https://r.jina.ai/"+f.buscar(s.title),{cache:"no-store",headers:{"X-Return-Format":"html"}});if(r2.ok)html=await r2.text()}catch(_){}}
+      const m=html.match(f.serieRe);
+      if(!m)continue;
+      const slug=m[1];
+      let spHtml=html;
+      try{const r2=await fetch(f.checkUrl(slug),{cache:"no-store"});if(r2.ok)spHtml=await r2.text();else if(f.jina){const r3=await fetch("https://r.jina.ai/"+f.checkUrl(slug),{cache:"no-store",headers:{"X-Return-Format":"html"}});if(r3.ok)spHtml=await r3.text()}}catch(_){}
+      const max=f.episodioRe(slug,spHtml);
+      if(!max)continue;
+      const tpl=f.template(slug);
+      const alts=[...(s.alts||[])];
+      if(!alts.includes(tpl))alts.push(tpl);
+      for(const a of f.alts(slug))if(!alts.includes(a))alts.push(a);
+      await write(s.id,{alts});
+      encontradas.push(`${f.nombre} (${max})`);
+      await new Promise(r=>setTimeout(r,1500));
+    }catch(_){}
+  }
+  S.checking=null;render();
+  if(encontradas.length)toast(`Encontrado en: ${encontradas.join(", ")}`);
+  else toast("No se encontró en otras webs.",true);
+}
 async function webFallback(data){
   const fallos=new Set(data?.failed||[]);
   return webCheck(S.series.filter(s=>tipoWeb(s)!=="anime"&&tipoWeb(s)!=="jkanime"&&tipoWeb(s)!=="animegratis"&&fallos.has(s.title)));
@@ -362,6 +393,13 @@ function posterHtml(s){
     <span class="ptitle">${esc(s.title)}</span><span class="psub">${esc(sub)}</span></button>`;
 }
 const siteLine=s=>`${host(s.watch_tpl)}${s.season?` · Temporada ${s.season}`:""}`;
+
+// Fuentes que se pueden buscar automáticamente por título.
+const FUENTES_BUSQUEDA=[
+  {nombre:"AnimeFLV",host:"animeflv.ar",buscar:q=>`https://animeflv.ar/?s=${encodeURIComponent(q)}`,serieRe:/https?:\/\/animeflv\.ar\/anime\/([a-z0-9-]+)\/?/,episodioRe:(slug,txt)=>{const re=new RegExp(`/${slug}-episodio-(\\d+)-sub-espanol`,"g");let x=0,m;while((m=re.exec(txt)))x=Math.max(x,+m[1]);return x},template:slug=>`https://animeflv.ar/${slug}-episodio-{n}-sub-espanol/`,checkUrl:slug=>`https://animeflv.ar/anime/${slug}/`,alts:slug=>[`https://animeav1.com/media/${slug}/{n}`,`https://www4.animeflv.net/ver/${slug}-{n}`],jina:false},
+  {nombre:"SeriesKao",host:"serieskao.top",buscar:q=>`https://serieskao.top/?s=${encodeURIComponent(q)}`,serieRe:/https?:\/\/serieskao\.top\/serie\/([a-z0-9-]+)(?:#|$)/,episodioRe:(slug,txt)=>{const re=new RegExp(`#s\\d+-e(\\d+)`,"g");let x=0,m;while((m=re.exec(txt)))x=Math.max(x,+m[1]);return x},template:slug=>`https://serieskao.top/serie/${slug}#s1-e{n}`,checkUrl:slug=>`https://serieskao.top/serie/${slug}`,alts:()=>[],jina:true},
+  {nombre:"PoseidonHD",host:"poseidonhd2.co",buscar:q=>`https://www.poseidonhd2.co/search?q=${encodeURIComponent(q)}`,serieRe:/https?:\/\/www\.poseidonhd2\.co\/serie\/(\d+\/[a-z0-9-]+)/,episodioRe:(slug,txt)=>{const se=1;const re=new RegExp(`(?:seasons/${se}/episodes|temporada/${se}/episodio)/(\\d+)`,"g");let x=0,m;while((m=re.exec(txt)))x=Math.max(x,+m[1]);return x},template:slug=>`https://www.poseidonhd2.co/serie/${slug}/temporada/1/episodio/{n}`,checkUrl:slug=>`https://www.poseidonhd2.co/serie/${slug}`,alts:()=>[],jina:true},
+];
 function watchBtns(s,nx,big){
   const warn=s.watch_ok===false?`<span class="warnline">No se pudo comprobar el enlace principal; prueba otra web.</span>`:"";
   const alts=(s.alts||[]).map(t=>`<a class="btn soft small" href="${esc(fill(t,nx))}" target="_blank" rel="noopener noreferrer">${esc(host(t))} ↗</a>`).join("");
@@ -415,6 +453,7 @@ function sheetHtml(s){
       <div class="eps"><h4>Dónde verla</h4><p class="note">La búsqueda comprueba que la web principal abre el siguiente capítulo; si falla, pasa sola a la siguiente que funcione.</p>
         <ul class="webs">${webs}</ul>
         <form class="altform" data-altform><input id="altUrl" type="url" placeholder="Pega el enlace del capítulo ${Math.min(nx,latest)||1} en otra web" aria-label="Enlace del capítulo en otra web"><button type="submit" class="soft small">Añadir web</button></form>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><button type="button" class="soft small" data-buscar-otras>Buscar en otras webs</button><span style="font-size:12.5px;color:var(--muted);align-self:center">AnimeFLV, SeriesKao y PoseidonHD</span></div>
         <p class="note" id="altMsg"></p></div>
       <div class="foot-act"><span>${s.latest_at?"Comprobada "+ago(s.latest_at):"Sin comprobar todavía"}</span>
         <a class="link" href="https://www.justwatch.com/es/buscar?q=${encodeURIComponent(s.title)}" target="_blank" rel="noopener noreferrer">Dónde verla legalmente ↗</a>
@@ -489,6 +528,7 @@ document.addEventListener("click",async e=>{
   const pr=t.closest("[data-primary]");if(pr){const i=+pr.dataset.primary,alts=[...(s.alts||[])];const nu=alts.splice(i,1)[0];write(s.id,{watch_tpl:nu,alts:[s.watch_tpl,...alts],watch_ok:null});toast(`${host(nu)} es ahora la web principal`);return}
   const dr=t.closest("[data-dropalt]");if(dr){const alts=[...(s.alts||[])];alts.splice(+dr.dataset.dropalt,1);write(s.id,{alts});return}
   if(t.closest("[data-remove]")){S.removing=true;S.confirm=null;return render()}
+  const bo=t.closest("[data-buscar-otras]");if(bo){const s=S.series.find(x=>x.id===S.open);if(s)buscarOtrasWebs(s);return}
   if(t.closest("[data-remove-yes]")){const id=s.id;S.series=S.series.filter(x=>x.id!==id);S.open=null;render();
     const {error}=await sb.from("series").delete().eq("id",id);toast(error?"No se pudo quitar la serie.":"Serie quitada",!!error)}
 });
