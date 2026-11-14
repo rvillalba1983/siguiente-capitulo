@@ -568,6 +568,27 @@ function emptyHtml(){
     <p>Añade las series y animes que sigues pegando el enlace de un capítulo de AnimeFLV, Cuevana, SeriesKao o PoseidonHD. También tienes el menú «Webs» para navegar y buscar nuevas. La web buscará los capítulos nuevos por ti cada 3 días y recordará cuáles has visto.</p>
     <div><button type="button" class="play" data-add>Añadir mi primera serie</button></div></div>`;
 }
+const sizeRails = () => {
+  document.querySelectorAll("#rows .rail").forEach(r => {
+    const n = r.children.length;
+    if (n === 0) return;
+    const w = r.clientWidth;
+    const maxFit = Math.max(1, Math.floor(w / 64));
+    const onlyAdd = r.children.length === 1 && r.querySelector('.addtile');
+    if (onlyAdd) {
+      r.style.gridTemplateColumns = '';
+      return;
+    }
+    const cols = Math.min(n, maxFit);
+    r.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  });
+};
+
+window.addEventListener('resize', () => {
+  clearTimeout(window._resizeTimer);
+  window._resizeTimer = setTimeout(sizeRails, 150);
+});
+
 function render(){
   const app=$("app"),login=$("login");
   if(!S.ready){app.hidden=true;login.hidden=true;return}
@@ -595,6 +616,7 @@ function render(){
   else if(S.open){const s=all.find(x=>x.id===S.open);if(!s){S.open=null;sh.hidden=true}else{const keep=$("altUrl")?.value||"";sh.innerHTML=sheetHtml(s);sh.hidden=false;if(keep&&$("altUrl"))$("altUrl").value=keep}}
   else sh.hidden=true;
   document.body.style.overflow=sh.hidden?"":"hidden";
+  sizeRails();
 }
 
 /* ---------- Interacción ---------- */
